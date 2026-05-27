@@ -22,7 +22,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   List<Detection> _detections = [];
   Size _imageSize = const Size(640, 640);
   bool _processing = false;
-  bool _highQuality = false; // Redmi Note 11 için 320 default
+  ModelSize _modelSize = ModelSize.s320;
   double _confThreshold = 0.30;
   double _fps = 0.0;
   DateTime _lastFrameTs = DateTime.now();
@@ -45,7 +45,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     }
 
     setState(() => _status = 'Loading model...');
-    await _detector.loadModel(highQuality: _highQuality);
+    await _detector.loadModel(_modelSize);
 
     setState(() => _status = 'Starting camera...');
     _cameras = await availableCameras();
@@ -120,15 +120,16 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     }
   }
 
-  Future<void> _toggleQuality(bool value) async {
+  Future<void> _selectModel(ModelSize size) async {
+    if (size == _modelSize) return;
     setState(() {
-      _highQuality = value;
+      _modelSize = size;
       _status = 'Switching model...';
       _fps = 0;
     });
     await _camera?.stopImageStream();
     await _detector.close();
-    await _detector.loadModel(highQuality: value);
+    await _detector.loadModel(size);
     await _camera!.startImageStream(_onFrame);
     setState(() => _status = 'Ready');
   }
@@ -336,26 +337,56 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                   ),
                 ],
               ),
-              const SizedBox(height: 8),
-              // Quality toggle
+              const SizedBox(height: 10),
+              // Model size segmented selector
               Row(
                 children: [
                   const SizedBox(
                     width: 80,
-                    child: Text('Mod', style: TextStyle(color: Colors.white70, fontSize: 12)),
+                    child: Text('Model', style: TextStyle(color: Colors.white70, fontSize: 12)),
                   ),
-                  const Text(
-                    'Hizli (320)',
-                    style: TextStyle(color: Colors.white, fontSize: 12),
-                  ),
-                  Switch(
-                    value: _highQuality,
-                    activeColor: const Color(0xFFFFD93D),
-                    onChanged: _toggleQuality,
-                  ),
-                  const Text(
-                    'Kalite (800)',
-                    style: TextStyle(color: Colors.white, fontSize: 12),
+                  Expanded(
+                    child: Container(
+                      decoration: BoxDecoration(
+                        color: Colors.white.withOpacity(0.08),
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(color: Colors.white12),
+                      ),
+                      padding: const EdgeInsets.all(3),
+                      child: Row(
+                        children: ModelSize.values.map((s) {
+                          final selected = s == _modelSize;
+                          return Expanded(
+                            child: GestureDetector(
+                              behavior: HitTestBehavior.opaque,
+                              onTap: () => _selectModel(s),
+                              child: AnimatedContainer(
+                                duration: const Duration(milliseconds: 160),
+                                padding: const EdgeInsets.symmetric(vertical: 7),
+                                decoration: BoxDecoration(
+                                  color: selected
+                                      ? const Color(0xFF4D96FF)
+                                      : Colors.transparent,
+                                  borderRadius: BorderRadius.circular(8),
+                                ),
+                                alignment: Alignment.center,
+                                child: Text(
+                                  s.label,
+                                  style: TextStyle(
+                                    color: selected ? Colors.white : Colors.white70,
+                                    fontSize: 12,
+                                    fontWeight: selected
+                                        ? FontWeight.w700
+                                        : FontWeight.w500,
+                                    fontFeatures: const [FontFeature.tabularFigures()],
+                                  ),
+                                ),
+                              ),
+                            ),
+                          );
+                        }).toList(),
+                      ),
+                    ),
                   ),
                 ],
               ),

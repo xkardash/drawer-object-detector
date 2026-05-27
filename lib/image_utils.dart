@@ -21,27 +21,26 @@ class PreprocessResult {
   });
 }
 
-/// Fills [buffer] (length = 1*size*size*3) with NHWC float32 [0..1] pixels
-/// sampled directly from a YUV420 CameraImage, applying a 90° clockwise
-/// rotation and a letterbox-resize to [targetSize] in a single pass.
+/// Fills [buffer] with int8 quantized pixels sampled directly from a YUV420
+/// CameraImage, applying a 90° clockwise rotation and a letterbox-resize
+/// to [targetSize] in a single pass.
 ///
-/// This bypasses the `image` package entirely (which is ~50× slower per pixel)
-/// and avoids any intermediate Image / List allocations per frame.
-PreprocessResult fillInputBufferFromCameraImage({
+/// [lut] is a 256-entry table mapping channel byte [0..255] to the model's
+/// quantized int8 representation. Build once in [buildInt8Lut].
+PreprocessResult fillInt8InputBufferFromCameraImage({
   required CameraImage image,
   required int targetSize,
-  required Float32List buffer,
+  required Int8List buffer,
+  required Int8List lut,
   int rotationDeg = 90,
 }) {
   final srcW = image.width;
   final srcH = image.height;
 
-  // Rotated frame dimensions (90 / 270 swap W and H).
   final bool swap = rotationDeg == 90 || rotationDeg == 270;
   final int rotW = swap ? srcH : srcW;
   final int rotH = swap ? srcW : srcH;
 
-  // Letterbox: scale to fit, fill with 114/255 (grey) padding.
   final double scale = targetSize / (rotW > rotH ? rotW : rotH);
   final int newW = (rotW * scale).round();
   final int newH = (rotH * scale).round();
@@ -58,32 +57,31 @@ PreprocessResult fillInputBufferFromCameraImage({
   final int uvRowStride = uPlane.bytesPerRow;
   final int uvPixelStride = uPlane.bytesPerPixel ?? 1;
 
-  const double pad = 114.0 / 255.0;
+  // Quantized padding (gray 114 → quantized).
+  final int padQ = lut[114];
   final double invScale = 1.0 / scale;
 
   int outIdx = 0;
   for (int ty = 0; ty < targetSize; ty++) {
-    // Rotated-frame y for this output row.
     final int ry = ((ty - padY) * invScale).toInt();
     final bool rowInside = ry >= 0 && ry < rotH;
 
     for (int tx = 0; tx < targetSize; tx++) {
       if (!rowInside) {
-        buffer[outIdx++] = pad;
-        buffer[outIdx++] = pad;
-        buffer[outIdx++] = pad;
+        buffer[outIdx++] = padQ;
+        buffer[outIdx++] = padQ;
+        buffer[outIdx++] = padQ;
         continue;
       }
 
       final int rx = ((tx - padX) * invScale).toInt();
       if (rx < 0 || rx >= rotW) {
-        buffer[outIdx++] = pad;
-        buffer[outIdx++] = pad;
-        buffer[outIdx++] = pad;
+        buffer[outIdx++] = padQ;
+        buffer[outIdx++] = padQ;
+        buffer[outIdx++] = padQ;
         continue;
       }
 
-      // Map (rx, ry) in rotated frame → (sx, sy) in source frame.
       int sx, sy;
       switch (rotationDeg) {
         case 90:
@@ -98,18 +96,17 @@ PreprocessResult fillInputBufferFromCameraImage({
           sx = srcW - 1 - ry;
           sy = rx;
           break;
-        default: // 0
+        default:
           sx = rx;
           sy = ry;
       }
 
-      // Sample YUV.
       final int yIdx = sy * yRowStride + sx;
       final int uvIdx = (sy >> 1) * uvRowStride + (sx >> 1) * uvPixelStride;
       if (yIdx >= yBytes.length || uvIdx >= uBytes.length) {
-        buffer[outIdx++] = pad;
-        buffer[outIdx++] = pad;
-        buffer[outIdx++] = pad;
+        buffer[outIdx++] = padQ;
+        buffer[outIdx++] = padQ;
+        buffer[outIdx++] = padQ;
         continue;
       }
 
@@ -117,7 +114,6 @@ PreprocessResult fillInputBufferFromCameraImage({
       final int uv = uBytes[uvIdx] - 128;
       final int vv = vBytes[uvIdx] - 128;
 
-      // BT.601 YUV→RGB.
       int r = yv + ((91881 * vv) >> 16);
       int g = yv - ((22554 * uv + 46802 * vv) >> 16);
       int b = yv + ((116130 * uv) >> 16);
@@ -126,9 +122,9 @@ PreprocessResult fillInputBufferFromCameraImage({
       if (g < 0) g = 0; else if (g > 255) g = 255;
       if (b < 0) b = 0; else if (b > 255) b = 255;
 
-      buffer[outIdx++] = r / 255.0;
-      buffer[outIdx++] = g / 255.0;
-      buffer[outIdx++] = b / 255.0;
+      buffer[outIdx++] = lut[r];
+      buffer[outIdx++] = lut[g];
+      buffer[outIdx++] = lut[b];
     }
   }
 
@@ -139,4 +135,16 @@ PreprocessResult fillInputBufferFromCameraImage({
     padX: padX,
     padY: padY,
   );
+}
+
+/// Build the quantization lookup table for a single channel byte.
+/// `q = round((byte/255) / scale + zeroPoint)`, clamped to int8 range.
+Int8List buildInt8Lut(double scale, int zeroPoint) {
+  final lut = Int8List(256);
+  for (int r = 0; r < 256; r++) {
+    final f = r / 255.0;
+    final q = (f / scale).round() + zeroPoint;
+    lut[r] = q < -128 ? -128 : (q > 127 ? 127 : q);
+  }
+  return lut;
 }
