@@ -94,6 +94,7 @@ class YoloDetector {
       _outChannels,
       _outAnchors,
       pp,
+      _inputSize,
       confThreshold,
       iouThreshold,
     );
@@ -106,6 +107,7 @@ class YoloDetector {
     int channels,
     int anchors,
     PreprocessResult pp,
+    int inputSize,
     double confThreshold,
     double iouThreshold,
   ) {
@@ -113,6 +115,9 @@ class YoloDetector {
     final double invScale = 1.0 / pp.scale;
     final double maxX = pp.rotatedWidth.toDouble();
     final double maxY = pp.rotatedHeight.toDouble();
+    // YOLOv8 Ultralytics TFLite export emits normalized [0..1] bbox coords.
+    // Scale to letterbox-pixel space before removing padding.
+    final double inSize = inputSize.toDouble();
 
     // Flat indexing: out[c * anchors + a] for channel c, anchor a.
     final List<_Candidate> candidates = [];
@@ -128,10 +133,10 @@ class YoloDetector {
       }
       if (maxScore < confThreshold) continue;
 
-      final cx = out[0 * anchors + a];
-      final cy = out[1 * anchors + a];
-      final w = out[2 * anchors + a];
-      final h = out[3 * anchors + a];
+      final cx = out[0 * anchors + a] * inSize;
+      final cy = out[1 * anchors + a] * inSize;
+      final w = out[2 * anchors + a] * inSize;
+      final h = out[3 * anchors + a] * inSize;
 
       double x1 = (cx - w * 0.5 - pp.padX) * invScale;
       double y1 = (cy - h * 0.5 - pp.padY) * invScale;
