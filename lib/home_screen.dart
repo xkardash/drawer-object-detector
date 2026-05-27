@@ -94,6 +94,16 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       final instantFps = dt > 0 ? 1000.0 / dt : 0.0;
       _fps = _fps == 0 ? instantFps : (_fps * 0.7 + instantFps * 0.3);
 
+      if (frame.detections.isNotEmpty) {
+        final d = frame.detections.first;
+        debugPrint(
+          'DET: ${d.className} ${d.confidence.toStringAsFixed(2)} '
+          'bbox=(${d.bbox.left.toStringAsFixed(0)},${d.bbox.top.toStringAsFixed(0)},'
+          '${d.bbox.right.toStringAsFixed(0)},${d.bbox.bottom.toStringAsFixed(0)}) '
+          'frame=${frame.frameWidth}x${frame.frameHeight}',
+        );
+      }
+
       if (mounted) {
         setState(() {
           _detections = frame.detections;
