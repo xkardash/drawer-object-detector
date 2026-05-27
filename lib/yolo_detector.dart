@@ -55,16 +55,17 @@ class YoloDetector {
 
     // Try GPU delegate first (Adreno on Android via OpenCL).
     // Fall back to multi-threaded CPU + XNNPACK if GPU init fails.
+    // Constants from TFLite C API (not re-exported by tflite_flutter):
+    //   inferencePreference: 1 = SUSTAINED_SPEED (vs FAST_SINGLE_ANSWER=0)
+    //   inferencePriority1:  2 = MIN_LATENCY    (vs MAX_PRECISION=1)
     Interpreter? interp;
     if (Platform.isAndroid) {
       try {
         final gpu = GpuDelegateV2(
           options: GpuDelegateOptionsV2(
             isPrecisionLossAllowed: true, // fp16 inference on GPU = faster
-            inferencePreference: TfLiteGpuInferenceUsage
-                .TFLITE_GPU_INFERENCE_PREFERENCE_SUSTAINED_SPEED,
-            inferencePriority1: TfLiteGpuInferencePriority
-                .TFLITE_GPU_INFERENCE_PRIORITY_MIN_LATENCY,
+            inferencePreference: 1,
+            inferencePriority1: 2,
           ),
         );
         final opts = InterpreterOptions()..addDelegate(gpu);
