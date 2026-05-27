@@ -1,6 +1,8 @@
+import 'dart:io';
 import 'dart:math' as math;
 import 'dart:typed_data';
 import 'package:camera/camera.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:tflite_flutter/tflite_flutter.dart';
 import 'detection.dart';
@@ -14,9 +16,9 @@ class DetectionFrame {
 }
 
 enum ModelSize {
-  s320(320, 'assets/models/cekmece_v4_int8_320.tflite', '320'),
-  s640(640, 'assets/models/cekmece_v4_int8_640.tflite', '640'),
-  s800(800, 'assets/models/cekmece_v4_int8_800.tflite', '800');
+  s320(320, 'assets/models/cekmece_v4_fp32_320.tflite', '320'),
+  s640(640, 'assets/models/cekmece_v4_fp32_640.tflite', '640'),
+  s800(800, 'assets/models/cekmece_v4_fp32_800.tflite', '800');
 
   final int pixels;
   final String assetPath;
@@ -26,52 +28,69 @@ enum ModelSize {
 
 class YoloDetector {
   Interpreter? _interpreter;
+  GpuDelegateV2? _gpuDelegate;
   List<String> _labels = [];
   int _inputSize = 320;
   String _currentModel = '';
+  bool _gpuActive = false;
 
-  Int8List? _inputBuffer;
-  Int8List? _outputBuffer;
-  Int8List? _inputLut;
+  Float32List? _inputBuffer;
+  Float32List? _outputBuffer;
   int _outChannels = 0;
   int _outAnchors = 0;
-
-  // Output dequantization: float = (int8 - zeroPoint) * scale
-  double _outScale = 1.0;
-  int _outZeroPoint = 0;
 
   static const String labelsPath = 'assets/models/labels.txt';
 
   int get inputSize => _inputSize;
   String get currentModel => _currentModel;
+  bool get gpuActive => _gpuActive;
   List<String> get labels => _labels;
   bool get isReady => _interpreter != null;
 
   Future<void> loadModel(ModelSize size) async {
-    _interpreter?.close();
+    await close();
 
     _inputSize = size.pixels;
     _currentModel = size.label;
 
-    final options = InterpreterOptions()..threads = 4;
-    _interpreter = await Interpreter.fromAsset(size.assetPath, options: options);
+    // Try GPU delegate first (Adreno on Android via OpenCL).
+    // Fall back to multi-threaded CPU + XNNPACK if GPU init fails.
+    Interpreter? interp;
+    if (Platform.isAndroid) {
+      try {
+        final gpu = GpuDelegateV2(
+          options: GpuDelegateOptionsV2(
+            isPrecisionLossAllowed: true, // fp16 inference on GPU = faster
+            inferencePreference: TfLiteGpuInferenceUsage
+                .TFLITE_GPU_INFERENCE_PREFERENCE_SUSTAINED_SPEED,
+            inferencePriority1: TfLiteGpuInferencePriority
+                .TFLITE_GPU_INFERENCE_PRIORITY_MIN_LATENCY,
+          ),
+        );
+        final opts = InterpreterOptions()..addDelegate(gpu);
+        interp = await Interpreter.fromAsset(size.assetPath, options: opts);
+        _gpuDelegate = gpu;
+        _gpuActive = true;
+        debugPrint('YoloDetector: GPU delegate active');
+      } catch (e) {
+        debugPrint('YoloDetector: GPU delegate failed ($e) — falling back to CPU');
+        _gpuDelegate = null;
+        _gpuActive = false;
+      }
+    }
+    if (interp == null) {
+      final opts = InterpreterOptions()..threads = 4;
+      interp = await Interpreter.fromAsset(size.assetPath, options: opts);
+    }
+    _interpreter = interp;
 
-    final inT = _interpreter!.getInputTensor(0);
-    final outT = _interpreter!.getOutputTensor(0);
-    final inShape = inT.shape; // [1,H,W,3]
-    final outShape = outT.shape; // [1, channels, anchors]
+    final inShape = _interpreter!.getInputTensor(0).shape; // [1,H,W,3]
+    final outShape = _interpreter!.getOutputTensor(0).shape; // [1, channels, anchors]
     _outChannels = outShape[1];
     _outAnchors = outShape[2];
 
-    _inputBuffer = Int8List(inShape[0] * inShape[1] * inShape[2] * inShape[3]);
-    _outputBuffer = Int8List(outShape[0] * outShape[1] * outShape[2]);
-
-    final inParams = inT.params;
-    _inputLut = buildInt8Lut(inParams.scale, inParams.zeroPoint);
-
-    final outParams = outT.params;
-    _outScale = outParams.scale;
-    _outZeroPoint = outParams.zeroPoint;
+    _inputBuffer = Float32List(inShape[0] * inShape[1] * inShape[2] * inShape[3]);
+    _outputBuffer = Float32List(outShape[0] * outShape[1] * outShape[2]);
 
     final labelData = await rootBundle.loadString(labelsPath);
     _labels = labelData.split('\n').where((s) => s.trim().isNotEmpty).toList();
@@ -80,6 +99,9 @@ class YoloDetector {
   Future<void> close() async {
     _interpreter?.close();
     _interpreter = null;
+    _gpuDelegate?.delete();
+    _gpuDelegate = null;
+    _gpuActive = false;
   }
 
   Future<DetectionFrame> detect(
@@ -89,21 +111,18 @@ class YoloDetector {
     double iouThreshold = 0.45,
   }) async {
     final interp = _interpreter;
-    if (interp == null ||
-        _inputBuffer == null ||
-        _outputBuffer == null ||
-        _inputLut == null) {
+    if (interp == null || _inputBuffer == null || _outputBuffer == null) {
       return const DetectionFrame([], 0, 0);
     }
 
-    final pp = fillInt8InputBufferFromCameraImage(
+    final pp = fillFloat32InputBufferFromCameraImage(
       image: image,
       targetSize: _inputSize,
       buffer: _inputBuffer!,
-      lut: _inputLut!,
       rotationDeg: rotationDeg,
     );
 
+    // Pass underlying ByteBuffers — fast-path: raw bytes, no nested-list walk.
     interp.runForMultipleInputs(
       [_inputBuffer!.buffer],
       {0: _outputBuffer!.buffer},
@@ -123,7 +142,7 @@ class YoloDetector {
   }
 
   List<Detection> _parseOutput(
-    Int8List out,
+    Float32List out,
     int channels,
     int anchors,
     PreprocessResult pp,
@@ -135,35 +154,26 @@ class YoloDetector {
     final double invScale = 1.0 / pp.scale;
     final double maxX = pp.rotatedWidth.toDouble();
     final double maxY = pp.rotatedHeight.toDouble();
+    // YOLOv8 Ultralytics TFLite export emits normalized [0..1] bbox coords.
     final double inSize = inputSize.toDouble();
-    final double oScale = _outScale;
-    final int oZero = _outZeroPoint;
-
-    // Compare scores in int8 space to skip the multiply on the hot path.
-    // float >= threshold  ⇔  (int8 - zero) * scale >= threshold
-    //                     ⇔  int8 >= ceil(threshold/scale) + zero
-    final int int8Threshold =
-        (confThreshold / oScale).ceil() + oZero;
 
     final List<_Candidate> candidates = [];
     for (int a = 0; a < anchors; a++) {
-      int maxScoreI = -129;
+      double maxScore = 0.0;
       int maxClassId = 0;
       for (int c = 0; c < numClasses; c++) {
         final s = out[(4 + c) * anchors + a];
-        if (s > maxScoreI) {
-          maxScoreI = s;
+        if (s > maxScore) {
+          maxScore = s;
           maxClassId = c;
         }
       }
-      if (maxScoreI < int8Threshold) continue;
+      if (maxScore < confThreshold) continue;
 
-      // Dequantize bbox and score only for surviving candidates.
-      final double cx = (out[a] - oZero) * oScale * inSize;
-      final double cy = (out[anchors + a] - oZero) * oScale * inSize;
-      final double w = (out[2 * anchors + a] - oZero) * oScale * inSize;
-      final double h = (out[3 * anchors + a] - oZero) * oScale * inSize;
-      final double maxScore = (maxScoreI - oZero) * oScale;
+      final cx = out[a] * inSize;
+      final cy = out[anchors + a] * inSize;
+      final w = out[2 * anchors + a] * inSize;
+      final h = out[3 * anchors + a] * inSize;
 
       double x1 = (cx - w * 0.5 - pp.padX) * invScale;
       double y1 = (cy - h * 0.5 - pp.padY) * invScale;

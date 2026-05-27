@@ -32,7 +32,7 @@ flutter:
   uses-material-design: true
 
   assets:
-    - assets/models/cekmece_v4_int8_320.tflite
-    - assets/models/cekmece_v4_int8_640.tflite
-    - assets/models/cekmece_v4_int8_800.tflite
+    - assets/models/cekmece_v4_fp32_320.tflite
+    - assets/models/cekmece_v4_fp32_640.tflite
+    - assets/models/cekmece_v4_fp32_800.tflite
     - assets/models/labels.txt
