@@ -1,0 +1,37 @@
+name: cekmece_detector
+description: "Cekmece icindeki nesneleri YOLOv8 ile real-time tespit eden mobil uygulama."
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.12.0
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.8
+
+  # ML / Inference
+  tflite_flutter: ^0.12.0
+
+  # Camera
+  camera: ^0.11.0+2
+
+  # Image processing
+  image: ^4.3.0
+
+  # Permissions
+  permission_handler: ^11.3.1
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true
+
+  assets:
+    - assets/models/cekmece_v4_fp32_800.tflite
+    - assets/models/cekmece_v4_fp32_320.tflite
+    - assets/models/labels.txt
