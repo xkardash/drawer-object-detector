@@ -15,7 +15,6 @@ class DetectionFrame {
 
 class YoloDetector {
   Interpreter? _interpreter;
-  IsolateInterpreter? _isolateInterpreter;
   List<String> _labels = [];
   int _inputSize = 320;
   String _currentModel = '';
@@ -32,10 +31,9 @@ class YoloDetector {
   int get inputSize => _inputSize;
   String get currentModel => _currentModel;
   List<String> get labels => _labels;
-  bool get isReady => _isolateInterpreter != null;
+  bool get isReady => _interpreter != null;
 
   Future<void> loadModel({required bool highQuality}) async {
-    await _isolateInterpreter?.close();
     _interpreter?.close();
 
     final modelPath = highQuality ? model800 : model320;
@@ -53,17 +51,12 @@ class YoloDetector {
     _inputBuffer = Float32List(inShape[0] * inShape[1] * inShape[2] * inShape[3]);
     _outputBuffer = Float32List(outShape[0] * outShape[1] * outShape[2]);
 
-    _isolateInterpreter =
-        await IsolateInterpreter.create(address: _interpreter!.address);
-
     final labelData = await rootBundle.loadString(labelsPath);
     _labels = labelData.split('\n').where((s) => s.trim().isNotEmpty).toList();
   }
 
   Future<void> close() async {
-    await _isolateInterpreter?.close();
     _interpreter?.close();
-    _isolateInterpreter = null;
     _interpreter = null;
   }
 
@@ -76,9 +69,8 @@ class YoloDetector {
     double confThreshold = 0.25,
     double iouThreshold = 0.45,
   }) async {
-    if (_isolateInterpreter == null ||
-        _inputBuffer == null ||
-        _outputBuffer == null) {
+    final interp = _interpreter;
+    if (interp == null || _inputBuffer == null || _outputBuffer == null) {
       return const DetectionFrame([], 0, 0);
     }
 
@@ -89,11 +81,12 @@ class YoloDetector {
       rotationDeg: rotationDeg,
     );
 
-    // Pass Float32List directly — tflite_flutter copies bytes natively,
-    // no nested-list allocation, no reshape walk.
-    await _isolateInterpreter!.runForMultipleInputs(
-      [_inputBuffer!],
-      {0: _outputBuffer!},
+    // Pass underlying ByteBuffers — tflite_flutter has a fast-path for these
+    // (raw byte transfer, no nested-list walk, no shape-check throw).
+    // Float32List shares memory with .buffer so reads after copyTo see updates.
+    interp.runForMultipleInputs(
+      [_inputBuffer!.buffer],
+      {0: _outputBuffer!.buffer},
     );
 
     final detections = _parseOutput(

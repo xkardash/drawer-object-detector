@@ -103,8 +103,8 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           );
         });
       }
-    } catch (_) {
-      // Skip failed frame
+    } catch (e, st) {
+      debugPrint('Detection error: $e\n$st');
     } finally {
       _processing = false;
     }
