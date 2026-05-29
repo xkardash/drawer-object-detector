@@ -94,6 +94,62 @@ Init başarısızsa **otomatik CPU XNNPACK + 4 thread fallback**.
 
 ---
 
+## Faz 2 Optimizasyonları (UI akıcılığı + off-thread inference)
+
+Faz 1'den sonra inference 30-80ms süresince UI thread'ini bloke ediyordu;
+`setState` her frame'de tüm widget ağacını rebuild ediyordu. Faz 2 bu iki
+problemi hedefler.
+
+### G. IsolateInterpreter (background isolate inference)
+`tflite_flutter` 0.12'nin `IsolateInterpreter`'ı interpreter'ı sarmalayarak
+inference'i ayrı bir isolate'te koşturur. Native interpreter address
+paylaşıldığı için tensors aynı yerde kalır; sadece input/output ByteBuffer'ları
+isolate sınırını geçer.
+
+```dart
+_interpreter = await Interpreter.fromAsset(asset, options: opts);
+_isolateInterpreter = await IsolateInterpreter.create(
+  address: _interpreter!.address,
+);
+// detect içinde:
+await _isolateInterpreter!.runForMultipleInputs(
+  [_inputBuffer!.buffer], {0: _outputBuffer!.buffer},
+);
+```
+
+UI thread artık inference süresince serbest — kamera frame teslimi ve render
+loop'u bloklanmıyor. Preprocessing ve parse hâlâ UI isolate'inde (Faz 3'te
+tek worker isolate'e taşınabilir).
+
+### H. ValueNotifier + RepaintBoundary (overlay izolasyonu)
+Frame başına değişen state (`detections`, `imageSize`, `fps`) `ValueNotifier`
+arkasında. `ValueListenableBuilder` ile sadece bbox overlay ve fps chip
+rebuild ediliyor; `CameraPreview` ve diğer chrome dokunulmuyor.
+
+```dart
+final _overlay = ValueNotifier<_OverlayFrame>(...);
+final _fps = ValueNotifier<double>(0.0);
+
+// _onFrame içinde:
+_overlay.value = _OverlayFrame(detections, imageSize);
+_fps.value = ema;
+
+// build içinde:
+Positioned.fill(
+  child: RepaintBoundary(
+    child: ValueListenableBuilder<_OverlayFrame>(
+      valueListenable: _overlay,
+      builder: (_, f, __) => CustomPaint(painter: DetectionPainter(...)),
+    ),
+  ),
+),
+```
+
+`RepaintBoundary` paint katmanını izole ediyor — bbox repaint'i parent
+Stack'in compositing'ini tetiklemiyor.
+
+---
+
 ## Tespit Edilen Bug'lar (Önemli)
 
 ### B1. `Tensor.copyTo(Float32List)` sessiz exception
@@ -135,19 +191,41 @@ INT8 quantization'da:
 **Çözüm**: Karar — fp32'de kal, GPU delegate ile hız al. INT8 modelleri silindi.
 
 **Bilgi**: Bu bilinen bir Ultralytics issue. Açık GitHub issue'ları var.
-`int8=True + nms=True` kombinasyonu DFL'i bypass edebilir ama test edilmedi.
+
+**GÜNCELLEME (Faz 3A, 2026-05-29) — nms=True bypass TEST EDİLDİ, BAŞARISIZ:**
+Hipotez (`int8=True nms=True` DFL'i bypass eder) iki ayrı şekilde çürütüldü:
+1. **int8 + nms=True**: ultralytics 8.3.167 + onnx2tf 2.4.0 ile export başarılı (output
+   `[1, 300, 6]` decoded), AMA üretilen gömülü-NMS grafiği `SELECT` op'unu hem `tf.lite`
+   hem `ai-edge-litert` runtime'ında `allocate_tensors`'ta hazırlayamıyor
+   (`select.cc: has_low_rank_input_condition was not true`). 4 varyant da (fp32/fp16/
+   int8/full-int8) aynı sebepten allocate olmuyor. `tflite_flutter` cihazda aynı runtime
+   ailesini kullandığı için telefonda da çalışmaz. → Op uyumsuzluğu, mimari engel.
+2. **Standart int8 (nms yok), güncel toolchain**: cx/cy hâlâ tam `0.0000`'a çöküyor
+   (w/h ve class skorları çalışıyor). onnx2tf 2.4.0 DFL int8 bug'ını DÜZELTMEMİŞ.
+
+**Sonuç**: Bu model + toolchain ile INT8 yolu tamamen kapalı. Hız için fp16 GPU delegate'te
+kal; başka kaldıraçlara bak (512 model / pipeline restructure / native plugin).
+Test script'leri: `export_int8_nms.py`, `test_int8_nms_model.py`, `diagnose_nms_models.py`,
+`test_int8_standard.py`.
 
 ---
 
 ## Performans Sonuçları (Redmi Note 11, release mode)
 
-| Mod | Önce | Sonra (CPU) | Sonra (GPU) |
-|-----|------|-------------|-------------|
-| 320 | ~1 FPS | ~8 FPS | **12 FPS** |
-| 640 | n/a | ~2 FPS | **4.5 FPS** |
-| 800 | ~1 FPS | ~1 FPS | TBD |
+| Mod | Önce | Faz 1 CPU | Faz 1 GPU | Faz 2 GPU + Isolate | Faz 3 ölçülen (2026-05-29) |
+|-----|------|-----------|-----------|---------------------|----------------------------|
+| 320 | ~1 FPS | ~8 FPS | 12 FPS | — | — |
+| 512 | n/a | — | — | — | **6 FPS** (yeni orta yol) |
+| 640 | n/a | ~2 FPS | 4.5 FPS | — | **4 FPS** (pre=11 inf=224 parse=0 pure=224) |
+| 800 | ~1 FPS | ~1 FPS | TBD | — | — |
 
-**Net kazanç**: 320 modunda **12×**, 640 modunda yenisi sayılır.
+**640 kırılımı (per-stage timing, Redmi Note 11, release):** inference compute %95,
+preprocess %5, parse ~0, IsolateInterpreter kopya yükü ~0 (inf≈pure). → **inference-bound.**
+Pipeline/worker-isolate restructure faydasız (kopya zaten 0). Tek kaldıraç input boyutu.
+512 = 224×(512/640)²+11 ≈ 154ms tahmini → ölçülen 6 FPS, tahmin tuttu.
+
+**Faz 1 net kazanç**: 320 modunda **12×**, 640 modunda yenisi sayılır.
+**Faz 2 beklenen**: UI takılması bitmiş + %30-50 ek FPS (inference UI thread'inden çıktığı için frame teslimi kuyruğa girmiyor).
 
 ---
 
@@ -175,11 +253,10 @@ ama 4.5 FPS biraz düşük. 800 daha geniş menzil ama hız ödün.
 - Confidence threshold'u 0.20-0.25'e düşür — düşük-skorlu uzak detection'ları
   kaybetmemek için. False positive riski artar.
 
-### O2. INT8 ile tekrar deneme (DFL bypass)
-`yolo export int8=True nms=True` ile re-export. NMS modele gömüldüğünde
-output formatı değişir (zaten decode edilmiş bboxes, DFL post-processing yok)
-— INT8 quantization safe olabilir. Test edilmedi. Başarılı olursa 320'de
-20+ FPS, 800'de bile 4-6 FPS mümkün.
+### O2. INT8 ile tekrar deneme (DFL bypass) — ❌ KAPALI (Faz 3A'da test edildi)
+`int8=True nms=True` denendi: gömülü-NMS grafiği `SELECT` op'u yüzünden hiçbir TFLite
+runtime'ında allocate olmuyor (cihazda da çalışmaz). Standart int8 ise hâlâ cx/cy=0.
+Tam analiz B3'te. **Bu yolu bir daha önerme.**
 
 ### O3. Native Kotlin plugin
 `tflite_flutter` yerine custom Flutter plugin yaz, Kotlin'de:
@@ -208,3 +285,8 @@ weights'ten zaten dequantize ediyor. Test edilmesi gerek.
 - **+inputSize çarpımı**: ~8 FPS, bbox çıkıyor. **İlk çalışan sürüm.**
 - **INT8 quantization denemesi**: Hız aynı/azaldı, cx/cy=0 bug, geri alındı.
 - **GPU delegate + fp32**: 320 = **12 FPS**, 640 = 4.5 FPS.
+- **+IsolateInterpreter (Faz 2)**: inference background isolate'inde — UI bloke yok.
+- **+ValueNotifier + RepaintBoundary (Faz 2)**: per-frame `setState` kaldırıldı, sadece overlay + fps chip repaint. Beklenen: 320 = 15-18 FPS, 640 = 6-7 FPS (cihazda ölçülecek).
+- **Faz 3A — INT8 + nms=True denemesi (2026-05-29)**: Karar kapısı Python'da çalıştırıldı.
+  Her iki int8 yolu da çürütüldü (nms=True → SELECT op allocate fail; standart int8 → cx/cy=0).
+  Flutter'a hiç dokunulmadı (~30 dk). INT8 yönü kapatıldı. Detay: B3 + O2.

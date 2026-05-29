@@ -33,6 +33,7 @@ flutter:
 
   assets:
     - assets/models/cekmece_v4_fp32_320.tflite
+    - assets/models/cekmece_v4_fp32_512.tflite
     - assets/models/cekmece_v4_fp32_640.tflite
     - assets/models/cekmece_v4_fp32_800.tflite
     - assets/models/labels.txt

@@ -43,3 +43,15 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# Build output anywhere (root /build/ above misses nested Gradle output like
+# android/build/) + Gradle caches
+build/
+/android/.gradle/
+/android/.kotlin/
+
+# INT8 kalibrasyon / export artefaktları (uygulamanın parçası değil)
+*.npy
+
+# Hatalı oluşmuş nested kopya
+/flutter_app/

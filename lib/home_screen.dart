@@ -1,10 +1,12 @@
 import 'dart:async';
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'detection.dart';
 import 'detection_painter.dart';
+import 'tracker.dart';
 import 'yolo_detector.dart';
 
 class HomeScreen extends StatefulWidget {
@@ -14,17 +16,39 @@ class HomeScreen extends StatefulWidget {
   State<HomeScreen> createState() => _HomeScreenState();
 }
 
-class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
+class _OverlayFrame {
+  final List<Detection> detections;
+  final Size imageSize;
+  const _OverlayFrame(this.detections, this.imageSize);
+}
+
+class _HomeScreenState extends State<HomeScreen>
+    with WidgetsBindingObserver, SingleTickerProviderStateMixin {
   CameraController? _camera;
   List<CameraDescription>? _cameras;
   final YoloDetector _detector = YoloDetector();
 
-  List<Detection> _detections = [];
-  Size _imageSize = const Size(640, 640);
+  // Inference rate'i (6 FPS) ekran rate'inden ayıran tracker + ticker.
+  // Ticker her ekran karesinde track'leri tahmini hızla kaydırıp overlay'i
+  // tazeler → telefon gezdirilirken bbox akıcı görünür.
+  final BoxTracker _tracker = BoxTracker();
+  Ticker? _ticker;
+  Size _trackImageSize = const Size(640, 640);
+  bool _lastOverlayEmpty = true;
+
+  // Per-frame state lives in notifiers — only the overlay + fps chip rebuild
+  // on each detection, not the entire Stack (which would also reconcile
+  // CameraPreview every frame).
+  final ValueNotifier<_OverlayFrame> _overlay = ValueNotifier(
+    const _OverlayFrame([], Size(640, 640)),
+  );
+  final ValueNotifier<double> _fps = ValueNotifier(0.0);
+  // Faz 3A teşhis: per-stage timing okuması (ekranda, logcat gerekmeden).
+  final ValueNotifier<String> _perf = ValueNotifier('');
+
   bool _processing = false;
-  ModelSize _modelSize = ModelSize.s320;
+  ModelSize _modelSize = ModelSize.s640;
   double _confThreshold = 0.30;
-  double _fps = 0.0;
   DateTime _lastFrameTs = DateTime.now();
   String _status = 'Initializing...';
 
@@ -33,7 +57,18 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
+    // Ekran-rate overlay sürücüsü: her vsync'te tahmini pozisyonları çiz.
+    _ticker = createTicker(_onTick)..start();
     _initialize();
+  }
+
+  void _onTick(Duration _) {
+    if (!mounted) return;
+    final preds = _tracker.predict(DateTime.now());
+    // Hiçbir şey yokken boşa repaint etme (boş→boş geçişi atla).
+    if (preds.isEmpty && _lastOverlayEmpty) return;
+    _lastOverlayEmpty = preds.isEmpty;
+    _overlay.value = _OverlayFrame(preds, _trackImageSize);
   }
 
   Future<void> _initialize() async {
@@ -56,7 +91,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
     _camera = CameraController(
       back,
-      ResolutionPreset.low, // 320p — minimum CPU yuku
+      ResolutionPreset.medium, // ~720p — modele daha temiz detay, ~2× menzil
       enableAudio: false,
       imageFormatGroup: ImageFormatGroup.yuv420,
     );
@@ -87,12 +122,18 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         rotationDeg: 90,
         confThreshold: _confThreshold,
       );
+      if (!mounted) return;
 
       final now = DateTime.now();
       final dt = now.difference(_lastFrameTs).inMilliseconds;
       _lastFrameTs = now;
       final instantFps = dt > 0 ? 1000.0 / dt : 0.0;
-      _fps = _fps == 0 ? instantFps : (_fps * 0.7 + instantFps * 0.3);
+      final prev = _fps.value;
+      _fps.value = prev == 0 ? instantFps : (prev * 0.7 + instantFps * 0.3);
+      _perf.value = 'pre ${_detector.preMs.toStringAsFixed(0)} · '
+          'inf ${_detector.infMs.toStringAsFixed(0)} · '
+          'parse ${_detector.parseMs.toStringAsFixed(0)} ms · '
+          'pure ${_detector.pureInferenceMs.toStringAsFixed(0)}';
 
       if (frame.detections.isNotEmpty) {
         final d = frame.detections.first;
@@ -104,15 +145,11 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         );
       }
 
-      if (mounted) {
-        setState(() {
-          _detections = frame.detections;
-          _imageSize = Size(
-            frame.frameWidth.toDouble(),
-            frame.frameHeight.toDouble(),
-          );
-        });
-      }
+      // Overlay'i doğrudan set etme — tracker'a besle; ekran-rate ticker
+      // (_onTick) tahmini pozisyonlarla overlay'i sürer.
+      _trackImageSize =
+          Size(frame.frameWidth.toDouble(), frame.frameHeight.toDouble());
+      _tracker.update(frame.detections, now);
     } catch (e, st) {
       debugPrint('Detection error: $e\n$st');
     } finally {
@@ -125,8 +162,11 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     setState(() {
       _modelSize = size;
       _status = 'Switching model...';
-      _fps = 0;
     });
+    _fps.value = 0;
+    _tracker.clear();
+    _overlay.value = const _OverlayFrame([], Size(640, 640));
+    _lastOverlayEmpty = true;
     await _camera?.stopImageStream();
     await _detector.close();
     await _detector.loadModel(size);
@@ -137,8 +177,12 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _ticker?.dispose();
     _camera?.dispose();
     _detector.close();
+    _overlay.dispose();
+    _fps.dispose();
+    _perf.dispose();
     SystemChrome.setPreferredOrientations(DeviceOrientation.values);
     super.dispose();
   }
@@ -184,12 +228,19 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
             ),
           ),
 
-          // Bbox overlay
+          // Bbox overlay — repaints only when detections change, isolated
+          // from the rest of the Stack by RepaintBoundary so camera preview
+          // and chrome don't re-layer.
           Positioned.fill(
-            child: CustomPaint(
-              painter: DetectionPainter(
-                detections: _detections,
-                imageSize: _imageSize,
+            child: RepaintBoundary(
+              child: ValueListenableBuilder<_OverlayFrame>(
+                valueListenable: _overlay,
+                builder: (_, frame, __) => CustomPaint(
+                  painter: DetectionPainter(
+                    detections: frame.detections,
+                    imageSize: frame.imageSize,
+                  ),
+                ),
               ),
             ),
           ),
@@ -212,7 +263,14 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           children: [
             _statusChip(),
             const Spacer(),
-            _fpsChip(),
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
+                _fpsChip(),
+                const SizedBox(height: 6),
+                _perfChip(),
+              ],
+            ),
           ],
         ),
       ),
@@ -260,13 +318,38 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         borderRadius: BorderRadius.circular(20),
         border: Border.all(color: Colors.white24),
       ),
-      child: Text(
-        '${_fps.toStringAsFixed(1)} FPS',
-        style: const TextStyle(
-          color: Colors.white,
-          fontSize: 13,
-          fontWeight: FontWeight.w600,
-          fontFeatures: [FontFeature.tabularFigures()],
+      child: ValueListenableBuilder<double>(
+        valueListenable: _fps,
+        builder: (_, fps, __) => Text(
+          '${fps.toStringAsFixed(1)} FPS',
+          style: const TextStyle(
+            color: Colors.white,
+            fontSize: 13,
+            fontWeight: FontWeight.w600,
+            fontFeatures: [FontFeature.tabularFigures()],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _perfChip() {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+      decoration: BoxDecoration(
+        color: Colors.black.withOpacity(0.55),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: Colors.white24),
+      ),
+      child: ValueListenableBuilder<String>(
+        valueListenable: _perf,
+        builder: (_, perf, __) => Text(
+          perf.isEmpty ? '— ms' : perf,
+          style: const TextStyle(
+            color: Colors.white70,
+            fontSize: 10,
+            fontFeatures: [FontFeature.tabularFigures()],
+          ),
         ),
       ),
     );
@@ -292,9 +375,12 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                 children: [
                   const Icon(Icons.center_focus_strong, color: Color(0xFF4D96FF), size: 18),
                   const SizedBox(width: 8),
-                  Text(
-                    '${_detections.length} nesne tespit edildi',
-                    style: const TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.w600),
+                  ValueListenableBuilder<_OverlayFrame>(
+                    valueListenable: _overlay,
+                    builder: (_, frame, __) => Text(
+                      '${frame.detections.length} nesne tespit edildi',
+                      style: const TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.w600),
+                    ),
                   ),
                 ],
               ),

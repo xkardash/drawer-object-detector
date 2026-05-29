@@ -17,6 +17,7 @@ class DetectionFrame {
 
 enum ModelSize {
   s320(320, 'assets/models/cekmece_v4_fp32_320.tflite', '320'),
+  s512(512, 'assets/models/cekmece_v4_fp32_512.tflite', '512'),
   s640(640, 'assets/models/cekmece_v4_fp32_640.tflite', '640'),
   s800(800, 'assets/models/cekmece_v4_fp32_800.tflite', '800');
 
@@ -28,6 +29,7 @@ enum ModelSize {
 
 class YoloDetector {
   Interpreter? _interpreter;
+  IsolateInterpreter? _isolateInterpreter;
   GpuDelegateV2? _gpuDelegate;
   List<String> _labels = [];
   int _inputSize = 320;
@@ -39,13 +41,25 @@ class YoloDetector {
   int _outChannels = 0;
   int _outAnchors = 0;
 
+  // --- Faz 3A teşhis: per-stage timing (EMA, ms) ---
+  // Amaç: 640'taki ~250ms/kare'nin nereye gittiğini kanıtla. inference baskınsa
+  // → 512 model; preprocess+copy baskınsa → pipeline/worker-isolate.
+  double _emaPre = 0, _emaInf = 0, _emaParse = 0;
+  // Ana-isolate'te ölçülen saf inference (kopya yükü HARİÇ). _emaInf ile farkı
+  // = IsolateInterpreter'ın kare başına buffer-kopya maliyeti.
+  double pureInferenceMs = 0;
+  int _perfFrame = 0;
+
   static const String labelsPath = 'assets/models/labels.txt';
 
   int get inputSize => _inputSize;
   String get currentModel => _currentModel;
   bool get gpuActive => _gpuActive;
   List<String> get labels => _labels;
-  bool get isReady => _interpreter != null;
+  bool get isReady => _isolateInterpreter != null;
+  double get preMs => _emaPre;
+  double get infMs => _emaInf;
+  double get parseMs => _emaParse;
 
   Future<void> loadModel(ModelSize size) async {
     await close();
@@ -93,11 +107,42 @@ class YoloDetector {
     _inputBuffer = Float32List(inShape[0] * inShape[1] * inShape[2] * inShape[3]);
     _outputBuffer = Float32List(outShape[0] * outShape[1] * outShape[2]);
 
+    // Warmup + saf-inference benchmark (ana-isolate, kamera akışı başlamadan,
+    // isolate'e sarmadan önce). İlk GPU run kernel'leri derler (çok yavaş) —
+    // warmup bunu yutar. Buradaki ölçüm kopya yükü İÇERMEZ; detect()'teki
+    // inf+copy ile farkı IsolateInterpreter'ın kare başına kopya maliyetidir.
+    try {
+      for (int i = 0; i < 3; i++) {
+        _interpreter!
+            .runForMultipleInputs([_inputBuffer!.buffer], {0: _outputBuffer!.buffer});
+      }
+      const bench = 12;
+      final sw = Stopwatch()..start();
+      for (int i = 0; i < bench; i++) {
+        _interpreter!
+            .runForMultipleInputs([_inputBuffer!.buffer], {0: _outputBuffer!.buffer});
+      }
+      pureInferenceMs = sw.elapsedMicroseconds / 1000.0 / bench;
+      debugPrint('YoloDetector: pure inference (ana-isolate, kopya hariç) = '
+          '${pureInferenceMs.toStringAsFixed(1)} ms/kare [$_currentModel gpu=$_gpuActive]');
+    } catch (e) {
+      debugPrint('YoloDetector: warmup/bench atlandı: $e');
+    }
+
+    // Wrap the interpreter so inference runs in a background isolate.
+    // The interpreter address is shared; tensors stay on the native side.
+    // Only the input/output ByteBuffers cross the isolate boundary per frame.
+    _isolateInterpreter = await IsolateInterpreter.create(
+      address: _interpreter!.address,
+    );
+
     final labelData = await rootBundle.loadString(labelsPath);
     _labels = labelData.split('\n').where((s) => s.trim().isNotEmpty).toList();
   }
 
   Future<void> close() async {
+    await _isolateInterpreter?.close();
+    _isolateInterpreter = null;
     _interpreter?.close();
     _interpreter = null;
     _gpuDelegate?.delete();
@@ -111,10 +156,12 @@ class YoloDetector {
     double confThreshold = 0.25,
     double iouThreshold = 0.45,
   }) async {
-    final interp = _interpreter;
+    final interp = _isolateInterpreter;
     if (interp == null || _inputBuffer == null || _outputBuffer == null) {
       return const DetectionFrame([], 0, 0);
     }
+
+    final sw = Stopwatch()..start();
 
     final pp = fillFloat32InputBufferFromCameraImage(
       image: image,
@@ -122,12 +169,19 @@ class YoloDetector {
       buffer: _inputBuffer!,
       rotationDeg: rotationDeg,
     );
+    final preUs = sw.elapsedMicroseconds;
+    sw.reset();
 
-    // Pass underlying ByteBuffers — fast-path: raw bytes, no nested-list walk.
-    interp.runForMultipleInputs(
+    // IsolateInterpreter runs inference on a background isolate; UI thread
+    // stays free for camera frames and rendering during the 30-80ms call.
+    // ByteBuffer fast-path: raw bytes, no nested-list walk.
+    // Bu süre = isolate'e kopya + native inference + isolate'ten kopya.
+    await interp.runForMultipleInputs(
       [_inputBuffer!.buffer],
       {0: _outputBuffer!.buffer},
     );
+    final infUs = sw.elapsedMicroseconds;
+    sw.reset();
 
     final detections = _parseOutput(
       _outputBuffer!,
@@ -138,8 +192,30 @@ class YoloDetector {
       confThreshold,
       iouThreshold,
     );
+    final parseUs = sw.elapsedMicroseconds;
+
+    _recordTiming(preUs, infUs, parseUs);
 
     return DetectionFrame(detections, pp.rotatedWidth, pp.rotatedHeight);
+  }
+
+  void _recordTiming(int preUs, int infUs, int parseUs) {
+    double ema(double prev, double v) => prev == 0 ? v : prev * 0.8 + v * 0.2;
+    _emaPre = ema(_emaPre, preUs / 1000.0);
+    _emaInf = ema(_emaInf, infUs / 1000.0);
+    _emaParse = ema(_emaParse, parseUs / 1000.0);
+    if (++_perfFrame % 30 == 0) {
+      final total = _emaPre + _emaInf + _emaParse;
+      final copy = _emaInf - pureInferenceMs; // kopya yükü tahmini
+      debugPrint(
+        'PERF[$_currentModel gpu=$_gpuActive] '
+        'pre=${_emaPre.toStringAsFixed(1)} '
+        'inf+copy=${_emaInf.toStringAsFixed(1)} '
+        '(pure=${pureInferenceMs.toStringAsFixed(1)} copy≈${copy.toStringAsFixed(1)}) '
+        'parse=${_emaParse.toStringAsFixed(1)} '
+        'total=${total.toStringAsFixed(1)}ms ~${(1000 / total).toStringAsFixed(1)}fps',
+      );
+    }
   }
 
   List<Detection> _parseOutput(
