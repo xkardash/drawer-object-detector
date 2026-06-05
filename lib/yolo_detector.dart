@@ -16,15 +16,39 @@ class DetectionFrame {
 }
 
 enum ModelSize {
-  s320(320, 'assets/models/cekmece_v4_fp32_320.tflite', '320'),
-  s512(512, 'assets/models/cekmece_v4_fp32_512.tflite', '512'),
-  s640(640, 'assets/models/cekmece_v4_fp32_640.tflite', '640'),
-  s800(800, 'assets/models/cekmece_v4_fp32_800.tflite', '800');
+  // Native fp32: each size is the model TRAINED at that resolution
+  // (cekmece_v4_141epoch_{N}imgsz), not the 800-model downscaled. PERFORMANCE.md
+  // shows native training wins clearly at 320 (small-object recall) and ties at
+  // 512/640. I/O is float32 → Float32List buffer path unchanged; the GPU delegate
+  // still runs them as fp16 internally (isPrecisionLossAllowed).
+  // NB: the earlier fp16 .tflite exports were broken — float16 I/O, no DEQUANTIZE —
+  // so they failed to allocate on both GPU and CPU (app hung on load). See PERFORMANCE.md.
+  s320(320, 'assets/models/cekmece_v4_native320_fp32.tflite', '320'),
+  s512(512, 'assets/models/cekmece_v4_native512_fp32.tflite', '512'),
+  s640(640, 'assets/models/cekmece_v4_native640_fp32.tflite', '640'),
+  s800(800, 'assets/models/cekmece_v4_native800_fp32.tflite', '800');
 
   final int pixels;
   final String assetPath;
   final String label;
   const ModelSize(this.pixels, this.assetPath, this.label);
+
+  /// Largest size whose predicted pure-inference time stays within [budgetMs],
+  /// extrapolating a single measured [refMs] at [refSize] by the cost∝size²
+  /// law validated in PERFORMANCE.md. Falls back to the smallest size if even
+  /// that exceeds the budget.
+  static ModelSize pickForBudget({
+    required double refMs,
+    required int refSize,
+    double budgetMs = 70,
+  }) {
+    var best = ModelSize.s320; // values are ascending in pixels
+    for (final s in ModelSize.values) {
+      final pred = refMs * (s.pixels * s.pixels) / (refSize * refSize);
+      if (pred <= budgetMs) best = s;
+    }
+    return best;
+  }
 }
 
 class YoloDetector {
@@ -99,8 +123,21 @@ class YoloDetector {
     }
     _interpreter = interp;
 
-    final inShape = _interpreter!.getInputTensor(0).shape; // [1,H,W,3]
-    final outShape = _interpreter!.getOutputTensor(0).shape; // [1, channels, anchors]
+    final inTensor = _interpreter!.getInputTensor(0);
+    final outTensor = _interpreter!.getOutputTensor(0);
+    // fp16 export must still expose float32 I/O — otherwise the Float32List
+    // buffer packing silently corrupts (B1: never let detection fail quietly).
+    if (inTensor.type != TensorType.float32 ||
+        outTensor.type != TensorType.float32) {
+      await close();
+      throw StateError(
+        'YoloDetector: float32 I/O bekleniyordu, '
+        'in=${inTensor.type} out=${outTensor.type} — '
+        'model export tensör tipini değiştirdiyse buffer kodu güncellenmeli.',
+      );
+    }
+    final inShape = inTensor.shape; // [1,H,W,3]
+    final outShape = outTensor.shape; // [1, channels, anchors]
     _outChannels = outShape[1];
     _outAnchors = outShape[2];
 
@@ -204,7 +241,7 @@ class YoloDetector {
     _emaPre = ema(_emaPre, preUs / 1000.0);
     _emaInf = ema(_emaInf, infUs / 1000.0);
     _emaParse = ema(_emaParse, parseUs / 1000.0);
-    if (++_perfFrame % 30 == 0) {
+    if (kDebugMode && ++_perfFrame % 30 == 0) {
       final total = _emaPre + _emaInf + _emaParse;
       final copy = _emaInf - pureInferenceMs; // kopya yükü tahmini
       debugPrint(

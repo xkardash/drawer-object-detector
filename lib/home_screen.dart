@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'package:camera/camera.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
@@ -47,10 +48,24 @@ class _HomeScreenState extends State<HomeScreen>
   final ValueNotifier<String> _perf = ValueNotifier('');
 
   bool _processing = false;
-  ModelSize _modelSize = ModelSize.s640;
+  bool _switching = false; // model reload in progress → drop frames
+  ModelSize _modelSize = ModelSize.s640; // auto-mode fallback / manual selection
   double _confThreshold = 0.30;
   DateTime _lastFrameTs = DateTime.now();
   String _status = 'Initializing...';
+
+  // Adaptive "Auto" model selection (balance: usable FPS + reasonable range).
+  // A single load-time benchmark (pureInferenceMs) drives a cost∝size² estimate
+  // (PERFORMANCE.md) to pick the largest size within the FPS budget; one runtime
+  // correction claims/returns headroom. No continuous switching — a model reload
+  // recompiles GPU kernels (~1–3s, no cache API), so oscillation is avoided.
+  bool _auto = true;
+  bool _autoSettled = false;
+  int _autoFrames = 0;
+  static const double _autoBudgetMs = 70; // ~12 FPS pure-inference budget
+  static const double _autoLowFps = 9;
+  static const double _autoHighFps = 18;
+  static const int _autoEvalFrames = 40;
 
   @override
   void initState() {
@@ -80,7 +95,11 @@ class _HomeScreenState extends State<HomeScreen>
     }
 
     setState(() => _status = 'Loading model...');
-    await _detector.loadModel(_modelSize);
+    if (_auto) {
+      await _loadAuto();
+    } else {
+      await _detector.loadModel(_modelSize);
+    }
 
     setState(() => _status = 'Starting camera...');
     _cameras = await availableCameras();
@@ -114,7 +133,7 @@ class _HomeScreenState extends State<HomeScreen>
   }
 
   void _onFrame(CameraImage image) async {
-    if (_processing) return;
+    if (_processing || _switching) return;
     _processing = true;
     try {
       final frame = await _detector.detect(
@@ -135,7 +154,9 @@ class _HomeScreenState extends State<HomeScreen>
           'parse ${_detector.parseMs.toStringAsFixed(0)} ms · '
           'pure ${_detector.pureInferenceMs.toStringAsFixed(0)}';
 
-      if (frame.detections.isNotEmpty) {
+      _maybeAutoCorrect();
+
+      if (kDebugMode && frame.detections.isNotEmpty) {
         final d = frame.detections.first;
         debugPrint(
           'DET: ${d.className} ${d.confidence.toStringAsFixed(2)} '
@@ -157,12 +178,11 @@ class _HomeScreenState extends State<HomeScreen>
     }
   }
 
-  Future<void> _selectModel(ModelSize size) async {
-    if (size == _modelSize) return;
-    setState(() {
-      _modelSize = size;
-      _status = 'Switching model...';
-    });
+  /// Core model reload: stop stream → close → load → restart. Guarded by
+  /// [_switching] so no frame runs detect() against a closing interpreter.
+  /// Does not touch [_auto]/[_status] so callers decide the mode semantics.
+  Future<void> _reloadModel(ModelSize size) async {
+    _switching = true;
     _fps.value = 0;
     _tracker.clear();
     _overlay.value = const _OverlayFrame([], Size(640, 640));
@@ -170,8 +190,96 @@ class _HomeScreenState extends State<HomeScreen>
     await _camera?.stopImageStream();
     await _detector.close();
     await _detector.loadModel(size);
-    await _camera!.startImageStream(_onFrame);
-    setState(() => _status = 'Ready');
+    _modelSize = size;
+    if (mounted) await _camera!.startImageStream(_onFrame);
+    _switching = false;
+  }
+
+  /// Probe with the cheapest model to get a reliable per-size cost, then load
+  /// the largest size within the FPS budget. Assumes the stream is stopped and
+  /// the detector closed (or fresh) — used by [_initialize] and [_enableAuto].
+  Future<void> _loadAuto() async {
+    await _detector.loadModel(ModelSize.s320);
+    final picked = _autoPick();
+    if (picked != ModelSize.s320) {
+      await _detector.close();
+      await _detector.loadModel(picked);
+    }
+    _modelSize = picked;
+    _autoSettled = false;
+    _autoFrames = 0;
+  }
+
+  /// Maps the load-time pure-inference benchmark to a target size. Extrapolation
+  /// from the 320 probe is slightly conservative for larger sizes (fixed GPU
+  /// overhead isn't size²), biasing toward smoothness; [_maybeAutoCorrect] then
+  /// reclaims headroom if real FPS is high.
+  ModelSize _autoPick() {
+    final ref = _detector.pureInferenceMs;
+    if (ref <= 0) return _modelSize; // bench unavailable → keep fallback
+    return ModelSize.pickForBudget(
+      refMs: ref,
+      refSize: _detector.inputSize,
+      budgetMs: _autoBudgetMs,
+    );
+  }
+
+  /// One-shot runtime correction: after the FPS EMA stabilizes, nudge one step
+  /// if measured FPS is clearly out of band, then settle (no oscillation).
+  void _maybeAutoCorrect() {
+    if (!_auto || _autoSettled || _switching) return;
+    if (++_autoFrames < _autoEvalFrames) return;
+    _autoSettled = true;
+    final fps = _fps.value;
+    final idx = _modelSize.index;
+    ModelSize? target;
+    if (fps < _autoLowFps && idx > 0) {
+      target = ModelSize.values[idx - 1];
+    } else if (fps > _autoHighFps && idx < ModelSize.values.length - 1) {
+      target = ModelSize.values[idx + 1];
+    }
+    if (target != null && target != _modelSize) {
+      final t = target;
+      scheduleMicrotask(() {
+        if (mounted && _auto) {
+          _reloadModel(t).then((_) {
+            if (mounted) setState(() {});
+          });
+        }
+      });
+    }
+  }
+
+  /// User tapped a fixed size → leave Auto, switch to that size.
+  Future<void> _selectModel(ModelSize size) async {
+    if (!_auto && size == _modelSize) return;
+    setState(() {
+      _auto = false;
+      _status = 'Switching model...';
+    });
+    _autoSettled = true; // manual override stops auto-correction
+    await _reloadModel(size);
+    if (mounted) setState(() => _status = 'Ready');
+  }
+
+  /// User tapped "Oto" → re-enable Auto and re-benchmark.
+  Future<void> _enableAuto() async {
+    if (_auto) return;
+    setState(() {
+      _auto = true;
+      _status = 'Auto: ölçülüyor...';
+    });
+    _switching = true;
+    _fps.value = 0;
+    _tracker.clear();
+    _overlay.value = const _OverlayFrame([], Size(640, 640));
+    _lastOverlayEmpty = true;
+    await _camera?.stopImageStream();
+    await _detector.close();
+    await _loadAuto();
+    if (mounted) await _camera!.startImageStream(_onFrame);
+    _switching = false;
+    if (mounted) setState(() => _status = 'Ready');
   }
 
   @override
@@ -355,6 +463,37 @@ class _HomeScreenState extends State<HomeScreen>
     );
   }
 
+  Widget _segChip({
+    required String label,
+    required bool selected,
+    required VoidCallback onTap,
+  }) {
+    return Expanded(
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: onTap,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 160),
+          padding: const EdgeInsets.symmetric(vertical: 7),
+          decoration: BoxDecoration(
+            color: selected ? const Color(0xFF4D96FF) : Colors.transparent,
+            borderRadius: BorderRadius.circular(8),
+          ),
+          alignment: Alignment.center,
+          child: Text(
+            label,
+            style: TextStyle(
+              color: selected ? Colors.white : Colors.white70,
+              fontSize: 12,
+              fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+              fontFeatures: const [FontFeature.tabularFigures()],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _buildBottomControls() {
     return Align(
       alignment: Alignment.bottomCenter,
@@ -440,37 +579,18 @@ class _HomeScreenState extends State<HomeScreen>
                       ),
                       padding: const EdgeInsets.all(3),
                       child: Row(
-                        children: ModelSize.values.map((s) {
-                          final selected = s == _modelSize;
-                          return Expanded(
-                            child: GestureDetector(
-                              behavior: HitTestBehavior.opaque,
-                              onTap: () => _selectModel(s),
-                              child: AnimatedContainer(
-                                duration: const Duration(milliseconds: 160),
-                                padding: const EdgeInsets.symmetric(vertical: 7),
-                                decoration: BoxDecoration(
-                                  color: selected
-                                      ? const Color(0xFF4D96FF)
-                                      : Colors.transparent,
-                                  borderRadius: BorderRadius.circular(8),
-                                ),
-                                alignment: Alignment.center,
-                                child: Text(
-                                  s.label,
-                                  style: TextStyle(
-                                    color: selected ? Colors.white : Colors.white70,
-                                    fontSize: 12,
-                                    fontWeight: selected
-                                        ? FontWeight.w700
-                                        : FontWeight.w500,
-                                    fontFeatures: const [FontFeature.tabularFigures()],
-                                  ),
-                                ),
-                              ),
-                            ),
-                          );
-                        }).toList(),
+                        children: [
+                          _segChip(
+                            label: 'Oto',
+                            selected: _auto,
+                            onTap: _enableAuto,
+                          ),
+                          ...ModelSize.values.map((s) => _segChip(
+                                label: s.label,
+                                selected: !_auto && s == _modelSize,
+                                onTap: () => _selectModel(s),
+                              )),
+                        ],
                       ),
                     ),
                   ),
