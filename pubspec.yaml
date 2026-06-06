@@ -38,9 +38,6 @@ flutter:
     # eğitimi vs 800px-downscale". fp16 exports were broken (float16 I/O) and the
     # 800-downscaled fp32 stay on disk for the thesis A/B but are not bundled.
     - assets/models/cekmece_v4_native320_fp32.tflite
-    - assets/models/cekmece_v4_native512_fp32.tflite
     - assets/models/cekmece_v4_native640_fp32.tflite
     - assets/models/cekmece_v4_native800_fp32.tflite
-    # YOLOv8s @320 ablation model (on-device FPS comparison vs YOLOv8n)
-    - assets/models/cekmece_v8s320_fp32.tflite
     - assets/models/labels.txt
