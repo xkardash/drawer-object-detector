@@ -1,0 +1,6 @@
+YOLOv8s ablation training | sizes [320, 640] | seed 42 | start 14:46:25
+[1/2] TRAIN cekmece_v8s_141epoch_320imgsz (imgsz=320) @ 14:46:25
+   done cekmece_v8s_141epoch_320imgsz in 12.6 min | final-val mAP50=0.5220 mAP50-95=0.3143
+[2/2] TRAIN cekmece_v8s_141epoch_640imgsz (imgsz=640) @ 14:59:02
+   done cekmece_v8s_141epoch_640imgsz in 17.2 min | final-val mAP50=0.7308 mAP50-95=0.4996
+ALL DONE in 29.9 min @ 15:16:17

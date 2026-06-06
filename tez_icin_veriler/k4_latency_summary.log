@@ -1,0 +1,9 @@
+K4 on-device latency / thermal | 116 frames | 30 s run
+======================================================================
+
+MODEL 640px  (116 frames, 29 s)
+  compute latency total_ms: p50=241  p95=267  p99=273  max=274  mean=245
+  instantaneous FPS:        p50=4.0  p05(worst)=3.4  mean=3.9
+  THERMAL: run too short for a curve (>60s, >=30 frames per model needed)
+
+Plot saved: C:\cekmece_yolov8_1\flutter_app\tez_icin_veriler\thesis_plots\k4_latency_thermal.png

@@ -55,3 +55,13 @@ build/
 
 # Hatalı oluşmuş nested kopya
 /flutter_app/
+
+# Bozuk/ölü fp16 export'ları (app kullanmıyor — fp32 native dağıtılıyor)
+assets/models/cekmece_v4_fp16_*.tflite
+
+# Tez ağır binary artefaktları (türetilebilir; yerelde kalır, remote'u şişirmesin)
+tez_icin_veriler/thesis_examples/
+tez_icin_veriler/thesis_plots/
+tez_icin_veriler/native_exports/
+tez_icin_veriler/*_stdout.log
+tez_icin_veriler/apk_build.log

@@ -1,0 +1,18 @@
+E2 multi-seed training | 8 runs | seeds [43, 44] | start 11:58:42
+[1/8] TRAIN cekmece_v4_141epoch_320imgsz_seed43 (imgsz=320, seed=43) @ 11:58:42
+   done cekmece_v4_141epoch_320imgsz_seed43 in 5.9 min | final-val mAP50=0.4675 mAP50-95=0.2514
+[2/8] TRAIN cekmece_v4_141epoch_320imgsz_seed44 (imgsz=320, seed=44) @ 12:04:36
+   done cekmece_v4_141epoch_320imgsz_seed44 in 6.3 min | final-val mAP50=0.4625 mAP50-95=0.2398
+[3/8] TRAIN cekmece_v4_141epoch_512imgsz_seed43 (imgsz=512, seed=43) @ 12:10:54
+   done cekmece_v4_141epoch_512imgsz_seed43 in 7.7 min | final-val mAP50=0.6052 mAP50-95=0.3808
+[4/8] TRAIN cekmece_v4_141epoch_512imgsz_seed44 (imgsz=512, seed=44) @ 12:18:37
+   done cekmece_v4_141epoch_512imgsz_seed44 in 7.8 min | final-val mAP50=0.5861 mAP50-95=0.3640
+[5/8] TRAIN cekmece_v4_141epoch_640imgsz_seed43 (imgsz=640, seed=43) @ 12:26:24
+   done cekmece_v4_141epoch_640imgsz_seed43 in 10.3 min | final-val mAP50=0.6966 mAP50-95=0.4414
+[6/8] TRAIN cekmece_v4_141epoch_640imgsz_seed44 (imgsz=640, seed=44) @ 12:36:42
+   done cekmece_v4_141epoch_640imgsz_seed44 in 10.4 min | final-val mAP50=0.7010 mAP50-95=0.4528
+[7/8] TRAIN cekmece_v4_141epoch_800imgsz_seed43 (imgsz=800, seed=43) @ 12:47:08
+   done cekmece_v4_141epoch_800imgsz_seed43 in 14.5 min | final-val mAP50=0.7262 mAP50-95=0.4910
+[8/8] TRAIN cekmece_v4_141epoch_800imgsz_seed44 (imgsz=800, seed=44) @ 13:01:41
+   done cekmece_v4_141epoch_800imgsz_seed44 in 14.8 min | final-val mAP50=0.7200 mAP50-95=0.4869
+ALL DONE in 77.8 min @ 13:16:28

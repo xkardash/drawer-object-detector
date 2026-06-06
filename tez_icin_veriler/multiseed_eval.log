@@ -1,0 +1,29 @@
+E2 multi-seed eval | TEST | seeds [42, 43, 44] | deterministic val (rect=True,batch=1)
+============================================================================
+RAW per-seed mAP@0.5 / mAP@0.5:0.95:
+    config | seed42 | seed43 | seed44
+   800@320 | 0.285/0.152 | 0.267/0.135 | 0.261/0.129
+   800@512 | 0.580/0.361 | 0.573/0.353 | 0.546/0.328
+   800@640 | 0.635/0.416 | 0.636/0.411 | 0.644/0.413
+   800@800 | 0.689/0.459 | 0.688/0.450 | 0.693/0.453
+ native320 | 0.334/0.192 | 0.355/0.197 | 0.372/0.202
+ native512 | 0.528/0.320 | 0.548/0.340 | 0.524/0.331
+ native640 | 0.594/0.373 | 0.618/0.397 | 0.612/0.385
+
+MEAN +/- STD over seeds:
+    config |   mAP@0.5 (mean+/-std) |  mAP@0.5:0.95 (mean+/-std)
+   800@320 |      0.271 +/- 0.012      |      0.139 +/- 0.012
+   800@512 |      0.566 +/- 0.018      |      0.347 +/- 0.017
+   800@640 |      0.638 +/- 0.005      |      0.413 +/- 0.003
+   800@800 |      0.690 +/- 0.002      |      0.454 +/- 0.005
+ native320 |      0.354 +/- 0.019      |      0.197 +/- 0.005
+ native512 |      0.533 +/- 0.013      |      0.330 +/- 0.010
+ native640 |      0.608 +/- 0.012      |      0.385 +/- 0.012
+
+VERDICT — native-N vs 800@N across seeds (does the gap survive training randomness?):
+  native320 vs 800@320      mAP@0.5: Δmean=+0.083  (native 0.354±0.019 vs 800 0.271±0.012, comb std 0.023) -> ROBUST (ranges disjoint)
+  native320 vs 800@320   mAP@.5:.95: Δmean=+0.058  (native 0.197±0.005 vs 800 0.139±0.012, comb std 0.013) -> ROBUST (ranges disjoint)
+  native512 vs 800@512      mAP@0.5: Δmean=-0.033  (native 0.533±0.013 vs 800 0.566±0.018, comb std 0.022) -> likely (|Δmean|>combined std)
+  native512 vs 800@512   mAP@.5:.95: Δmean=-0.017  (native 0.330±0.010 vs 800 0.347±0.017, comb std 0.020) -> WITHIN seed noise
+  native640 vs 800@640      mAP@0.5: Δmean=-0.030  (native 0.608±0.012 vs 800 0.638±0.005, comb std 0.013) -> ROBUST (ranges disjoint)
+  native640 vs 800@640   mAP@.5:.95: Δmean=-0.029  (native 0.385±0.012 vs 800 0.413±0.003, comb std 0.012) -> ROBUST (ranges disjoint)

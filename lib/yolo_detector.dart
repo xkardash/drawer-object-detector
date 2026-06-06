@@ -26,12 +26,17 @@ enum ModelSize {
   s320(320, 'assets/models/cekmece_v4_native320_fp32.tflite', '320'),
   s512(512, 'assets/models/cekmece_v4_native512_fp32.tflite', '512'),
   s640(640, 'assets/models/cekmece_v4_native640_fp32.tflite', '640'),
-  s800(800, 'assets/models/cekmece_v4_native800_fp32.tflite', '800');
+  s800(800, 'assets/models/cekmece_v4_native800_fp32.tflite', '800'),
+  // YOLOv8s @320 ablation (bigger model, same input; fp32 tflite ~45 MB). NOT
+  // auto-selectable: Auto's cost∝size² extrapolation assumes the YOLOv8n arch,
+  // but this is ~3.5× heavier — must be picked manually (on-device FPS test).
+  v8s320(320, 'assets/models/cekmece_v8s320_fp32.tflite', '320s', autoSelectable: false);
 
   final int pixels;
   final String assetPath;
   final String label;
-  const ModelSize(this.pixels, this.assetPath, this.label);
+  final bool autoSelectable;
+  const ModelSize(this.pixels, this.assetPath, this.label, {this.autoSelectable = true});
 
   /// Largest size whose predicted pure-inference time stays within [budgetMs],
   /// extrapolating a single measured [refMs] at [refSize] by the cost∝size²
@@ -43,7 +48,7 @@ enum ModelSize {
     double budgetMs = 70,
   }) {
     var best = ModelSize.s320; // values are ascending in pixels
-    for (final s in ModelSize.values) {
+    for (final s in ModelSize.values.where((m) => m.autoSelectable)) {
       final pred = refMs * (s.pixels * s.pixels) / (refSize * refSize);
       if (pred <= budgetMs) best = s;
     }

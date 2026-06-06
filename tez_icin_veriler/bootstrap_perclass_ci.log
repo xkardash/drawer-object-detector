@@ -1,0 +1,33 @@
+Per-class bootstrap 95% CI | TEST, 40 images, B=2000, seed=42
+AP via ultralytics ap_per_class (== model.val); engine = E1 capture
+==============================================================================
+
+PER-CLASS AP@0.5  observed [95% CI]  (note CI WIDTH per class):
+    config |        anahtar |         cakmak |          kalem |          makas |  tirnak_makasi
+-----------------------------------------------------------------------------------------------
+   800@320 | 0.21[0.07,0.31] | 0.21[0.11,0.34] | 0.32[0.21,0.46] | 0.52[0.36,0.67] | 0.16[0.04,0.34]
+   800@800 | 0.76[0.47,0.93] | 0.63[0.48,0.75] | 0.64[0.52,0.76] | 0.88[0.79,0.94] | 0.54[0.34,0.72]
+ native320 | 0.24[0.10,0.42] | 0.30[0.19,0.43] | 0.40[0.26,0.56] | 0.60[0.43,0.76] | 0.12[0.04,0.29]
+
+PAIRED per-class  Delta = native320 - 800@320   (A: native-vs-downscale @320):
+         class |   Delta |      95% CI of Delta | sig?
+--------------------------------------------------------
+       anahtar |  +0.034 | [-0.078, +0.190] | no
+        cakmak |  +0.091 | [-0.002, +0.185] | no
+         kalem |  +0.080 | [+0.009, +0.139] | YES
+         makas |  +0.085 | [-0.025, +0.194] | no
+ tirnak_makasi |  -0.045 | [-0.156, +0.072] | no
+
+PAIRED per-class  Delta = 800@800 - 800@320   (B: resolution effect 320->800):
+         class |   Delta |      95% CI of Delta | sig?
+--------------------------------------------------------
+       anahtar |  +0.555 | [+0.363, +0.710] | YES
+        cakmak |  +0.417 | [+0.292, +0.524] | YES
+         kalem |  +0.315 | [+0.242, +0.385] | YES
+         makas |  +0.360 | [+0.228, +0.501] | YES
+ tirnak_makasi |  +0.377 | [+0.215, +0.516] | YES
+
+HEADLINE CHECK — tirnak_makasi (n=27 test instances):
+  @320 AP50 = 0.161  CI [0.043, 0.340]
+  @800 AP50 = 0.538  CI [0.343, 0.720]
+  observed ratio = 3.34x ; ratio if you take CI extremes: 16.9x .. 1.0x

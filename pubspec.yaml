@@ -20,6 +20,9 @@ dependencies:
   # Permissions
   permission_handler: ^11.3.1
 
+  # On-device latency/thermal logging (K4) — writes CSV to app external dir
+  path_provider: ^2.1.4
+
 dev_dependencies:
   flutter_test:
     sdk: flutter
@@ -38,4 +41,6 @@ flutter:
     - assets/models/cekmece_v4_native512_fp32.tflite
     - assets/models/cekmece_v4_native640_fp32.tflite
     - assets/models/cekmece_v4_native800_fp32.tflite
+    # YOLOv8s @320 ablation model (on-device FPS comparison vs YOLOv8n)
+    - assets/models/cekmece_v8s320_fp32.tflite
     - assets/models/labels.txt

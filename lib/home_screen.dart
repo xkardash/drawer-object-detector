@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'detection.dart';
 import 'detection_painter.dart';
+import 'latency_logger.dart';
 import 'tracker.dart';
 import 'yolo_detector.dart';
 
@@ -46,6 +47,10 @@ class _HomeScreenState extends State<HomeScreen>
   final ValueNotifier<double> _fps = ValueNotifier(0.0);
   // Faz 3A teşhis: per-stage timing okuması (ekranda, logcat gerekmeden).
   final ValueNotifier<String> _perf = ValueNotifier('');
+
+  // K4: cihaz-üstü gecikme + termal/sürdürülen FPS kaydı (CSV → app harici dizin).
+  final LatencyLogger _logger = LatencyLogger();
+  final ValueNotifier<String> _logStatus = ValueNotifier('');
 
   bool _processing = false;
   bool _switching = false; // model reload in progress → drop frames
@@ -153,6 +158,18 @@ class _HomeScreenState extends State<HomeScreen>
           'inf ${_detector.infMs.toStringAsFixed(0)} · '
           'parse ${_detector.parseMs.toStringAsFixed(0)} ms · '
           'pure ${_detector.pureInferenceMs.toStringAsFixed(0)}';
+
+      // K4: kayıt aktifse bu karenin gecikme metriklerini biriktir.
+      if (_logger.active) {
+        _logger.add(
+          dtMs: dt,
+          totalMs: _detector.preMs + _detector.infMs + _detector.parseMs,
+          pureMs: _detector.pureInferenceMs,
+          fps: _fps.value,
+          model: _detector.inputSize,
+        );
+        _logStatus.value = '● REC ${_logger.elapsedSec}s · ${_logger.count}f';
+      }
 
       _maybeAutoCorrect();
 
@@ -282,6 +299,26 @@ class _HomeScreenState extends State<HomeScreen>
     if (mounted) setState(() => _status = 'Ready');
   }
 
+  /// K4: start/stop on-device latency+thermal recording. On stop, writes the CSV
+  /// and shows its path. Tip: turn Auto OFF and pick a fixed size before a run so
+  /// the thermal curve reflects one model (model_px is logged regardless).
+  Future<void> _toggleLog() async {
+    if (_logger.active) {
+      final path = await _logger.stop();
+      _logStatus.value = '';
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Kayıt bitti: $path'),
+          duration: const Duration(seconds: 10),
+        ));
+      }
+    } else {
+      _logger.start();
+      _logStatus.value = '● REC 0s · 0f';
+    }
+    if (mounted) setState(() {});
+  }
+
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
@@ -291,6 +328,7 @@ class _HomeScreenState extends State<HomeScreen>
     _overlay.dispose();
     _fps.dispose();
     _perf.dispose();
+    _logStatus.dispose();
     SystemChrome.setPreferredOrientations(DeviceOrientation.values);
     super.dispose();
   }
@@ -370,6 +408,8 @@ class _HomeScreenState extends State<HomeScreen>
         child: Row(
           children: [
             _statusChip(),
+            const SizedBox(width: 8),
+            _recChip(),
             const Spacer(),
             Column(
               crossAxisAlignment: CrossAxisAlignment.end,
@@ -435,6 +475,37 @@ class _HomeScreenState extends State<HomeScreen>
             fontSize: 13,
             fontWeight: FontWeight.w600,
             fontFeatures: [FontFeature.tabularFigures()],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// K4 record toggle — tap to start/stop latency+thermal CSV logging.
+  Widget _recChip() {
+    final on = _logger.active;
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: _toggleLog,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+        decoration: BoxDecoration(
+          color: Colors.black.withOpacity(0.55),
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(
+            color: on ? const Color(0xFFFF6B6B) : Colors.white24,
+          ),
+        ),
+        child: ValueListenableBuilder<String>(
+          valueListenable: _logStatus,
+          builder: (_, s, __) => Text(
+            s.isEmpty ? '⦿ Kayıt' : s,
+            style: TextStyle(
+              color: on ? const Color(0xFFFF6B6B) : Colors.white70,
+              fontSize: 11,
+              fontWeight: FontWeight.w600,
+              fontFeatures: const [FontFeature.tabularFigures()],
+            ),
           ),
         ),
       ),

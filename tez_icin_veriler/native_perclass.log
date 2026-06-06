@@ -1,0 +1,91 @@
+
+=== trained800_in320 (imgsz=320, split=test) ===
+Ultralytics 8.3.167  Python-3.12.6 torch-2.5.1+cu121 CUDA:0 (NVIDIA GeForce RTX 4060 Laptop GPU, 8188MiB)
+Model summary (fused): 72 layers, 3,006,623 parameters, 0 gradients, 8.1 GFLOPs
+[34m[1mval: [0mFast image access  (ping: 0.10.0 ms, read: 3374.5489.7 MB/s, size: 2664.4 KB)
+[34m[1mval: [0mScanning C:\cekmece_yolov8_1\dataset\labels\test.cache... 40 images, 1 backgrounds, 0 corrupt: 100%|##########| 40/40 [00:00<?, ?it/s][34m[1mval: [0mScanning C:\cekmece_yolov8_1\dataset\labels\test.cache... 40 images, 1 backgrounds, 0 corrupt: 100%|##########| 40/40 [00:00<?, ?it/s]
+                 Class     Images  Instances      Box(P          R      mAP50  mAP50-95):   0%|          | 0/3 [00:00<?, ?it/s]                 Class     Images  Instances      Box(P          R      mAP50  mAP50-95):  33%|###3      | 1/3 [00:00<00:01,  1.46it/s]                 Class     Images  Instances      Box(P          R      mAP50  mAP50-95):  67%|######6   | 2/3 [00:01<00:00,  1.65it/s]                 Class     Images  Instances      Box(P          R      mAP50  mAP50-95): 100%|##########| 3/3 [00:01<00:00,  2.08it/s]                 Class     Images  Instances      Box(P          R      mAP50  mAP50-95): 100%|##########| 3/3 [00:01<00:00,  1.91it/s]
+                   all         40        359      0.473      0.265      0.276      0.145
+Speed: 0.1ms preprocess, 2.3ms inference, 0.0ms loss, 2.7ms postprocess per image
+Results saved to [1mC:\cekmece_yolov8_1\results\thesis_plots\trained800_in320[0m
+
+=== trained800_in512 (imgsz=512, split=test) ===
+Ultralytics 8.3.167  Python-3.12.6 torch-2.5.1+cu121 CUDA:0 (NVIDIA GeForce RTX 4060 Laptop GPU, 8188MiB)
+Model summary (fused): 72 layers, 3,006,623 parameters, 0 gradients, 8.1 GFLOPs
+[34m[1mval: [0mFast image access  (ping: 0.00.0 ms, read: 3638.0255.1 MB/s, size: 2095.9 KB)
+[34m[1mval: [0mScanning C:\cekmece_yolov8_1\dataset\labels\test.cache... 40 images, 1 backgrounds, 0 corrupt: 100%|##########| 40/40 [00:00<?, ?it/s][34m[1mval: [0mScanning C:\cekmece_yolov8_1\dataset\labels\test.cache... 40 images, 1 backgrounds, 0 corrupt: 100%|##########| 40/40 [00:00<?, ?it/s]
+                 Class     Images  Instances      Box(P          R      mAP50  mAP50-95):   0%|          | 0/3 [00:00<?, ?it/s]                 Class     Images  Instances      Box(P          R      mAP50  mAP50-95):  33%|###3      | 1/3 [00:00<00:01,  1.85it/s]                 Class     Images  Instances      Box(P          R      mAP50  mAP50-95):  67%|######6   | 2/3 [00:01<00:00,  1.81it/s]                 Class     Images  Instances      Box(P          R      mAP50  mAP50-95): 100%|##########| 3/3 [00:01<00:00,  2.15it/s]                 Class     Images  Instances      Box(P          R      mAP50  mAP50-95): 100%|##########| 3/3 [00:01<00:00,  2.05it/s]
+                   all         40        359      0.678      0.532      0.582      0.362
+Speed: 0.1ms preprocess, 1.7ms inference, 0.0ms loss, 0.7ms postprocess per image
+Results saved to [1mC:\cekmece_yolov8_1\results\thesis_plots\trained800_in512[0m
+
+=== trained800_in640 (imgsz=640, split=test) ===
+Ultralytics 8.3.167  Python-3.12.6 torch-2.5.1+cu121 CUDA:0 (NVIDIA GeForce RTX 4060 Laptop GPU, 8188MiB)
+Model summary (fused): 72 layers, 3,006,623 parameters, 0 gradients, 8.1 GFLOPs
+[34m[1mval: [0mFast image access  (ping: 0.00.0 ms, read: 4018.4395.4 MB/s, size: 2309.6 KB)
+[34m[1mval: [0mScanning C:\cekmece_yolov8_1\dataset\labels\test.cache... 40 images, 1 backgrounds, 0 corrupt: 100%|##########| 40/40 [00:00<?, ?it/s][34m[1mval: [0mScanning C:\cekmece_yolov8_1\dataset\labels\test.cache... 40 images, 1 backgrounds, 0 corrupt: 100%|##########| 40/40 [00:00<?, ?it/s]
+                 Class     Images  Instances      Box(P          R      mAP50  mAP50-95):   0%|          | 0/3 [00:00<?, ?it/s]                 Class     Images  Instances      Box(P          R      mAP50  mAP50-95):  33%|###3      | 1/3 [00:00<00:01,  1.81it/s]                 Class     Images  Instances      Box(P          R      mAP50  mAP50-95):  67%|######6   | 2/3 [00:01<00:00,  1.75it/s]                 Class     Images  Instances      Box(P          R      mAP50  mAP50-95): 100%|##########| 3/3 [00:01<00:00,  2.13it/s]                 Class     Images  Instances      Box(P          R      mAP50  mAP50-95): 100%|##########| 3/3 [00:01<00:00,  2.02it/s]
+                   all         40        359      0.846      0.509      0.636       0.42
+Speed: 0.2ms preprocess, 1.7ms inference, 0.0ms loss, 0.7ms postprocess per image
+Results saved to [1mC:\cekmece_yolov8_1\results\thesis_plots\trained800_in640[0m
+
+=== trained800_in800 (imgsz=800, split=test) ===
+Ultralytics 8.3.167  Python-3.12.6 torch-2.5.1+cu121 CUDA:0 (NVIDIA GeForce RTX 4060 Laptop GPU, 8188MiB)
+Model summary (fused): 72 layers, 3,006,623 parameters, 0 gradients, 8.1 GFLOPs
+[34m[1mval: [0mFast image access  (ping: 0.00.0 ms, read: 3794.1557.7 MB/s, size: 2451.4 KB)
+[34m[1mval: [0mScanning C:\cekmece_yolov8_1\dataset\labels\test.cache... 40 images, 1 backgrounds, 0 corrupt: 100%|##########| 40/40 [00:00<?, ?it/s][34m[1mval: [0mScanning C:\cekmece_yolov8_1\dataset\labels\test.cache... 40 images, 1 backgrounds, 0 corrupt: 100%|##########| 40/40 [00:00<?, ?it/s]
+                 Class     Images  Instances      Box(P          R      mAP50  mAP50-95):   0%|          | 0/3 [00:00<?, ?it/s]                 Class     Images  Instances      Box(P          R      mAP50  mAP50-95):  33%|###3      | 1/3 [00:00<00:01,  1.72it/s]                 Class     Images  Instances      Box(P          R      mAP50  mAP50-95):  67%|######6   | 2/3 [00:01<00:00,  1.63it/s]                 Class     Images  Instances      Box(P          R      mAP50  mAP50-95): 100%|##########| 3/3 [00:01<00:00,  1.99it/s]                 Class     Images  Instances      Box(P          R      mAP50  mAP50-95): 100%|##########| 3/3 [00:01<00:00,  1.89it/s]
+                   all         40        359      0.811      0.604       0.69       0.46
+Speed: 0.2ms preprocess, 2.3ms inference, 0.0ms loss, 0.7ms postprocess per image
+Results saved to [1mC:\cekmece_yolov8_1\results\thesis_plots\trained800_in800[0m
+
+=== native320 (imgsz=320, split=test) ===
+Ultralytics 8.3.167  Python-3.12.6 torch-2.5.1+cu121 CUDA:0 (NVIDIA GeForce RTX 4060 Laptop GPU, 8188MiB)
+Model summary (fused): 72 layers, 3,006,623 parameters, 0 gradients, 8.1 GFLOPs
+[34m[1mval: [0mFast image access  (ping: 0.10.0 ms, read: 3339.0201.9 MB/s, size: 2962.8 KB)
+[34m[1mval: [0mScanning C:\cekmece_yolov8_1\dataset\labels\test.cache... 40 images, 1 backgrounds, 0 corrupt: 100%|##########| 40/40 [00:00<?, ?it/s][34m[1mval: [0mScanning C:\cekmece_yolov8_1\dataset\labels\test.cache... 40 images, 1 backgrounds, 0 corrupt: 100%|##########| 40/40 [00:00<?, ?it/s]
+                 Class     Images  Instances      Box(P          R      mAP50  mAP50-95):   0%|          | 0/3 [00:00<?, ?it/s]                 Class     Images  Instances      Box(P          R      mAP50  mAP50-95):  33%|###3      | 1/3 [00:00<00:01,  1.92it/s]                 Class     Images  Instances      Box(P          R      mAP50  mAP50-95):  67%|######6   | 2/3 [00:01<00:00,  1.87it/s]                 Class     Images  Instances      Box(P          R      mAP50  mAP50-95): 100%|##########| 3/3 [00:01<00:00,  2.31it/s]                 Class     Images  Instances      Box(P          R      mAP50  mAP50-95): 100%|##########| 3/3 [00:01<00:00,  2.18it/s]
+                   all         40        359      0.482      0.326      0.334      0.193
+Speed: 0.0ms preprocess, 0.5ms inference, 0.0ms loss, 0.7ms postprocess per image
+Results saved to [1mC:\cekmece_yolov8_1\results\thesis_plots\native320[0m
+
+=== native512 (imgsz=512, split=test) ===
+Ultralytics 8.3.167  Python-3.12.6 torch-2.5.1+cu121 CUDA:0 (NVIDIA GeForce RTX 4060 Laptop GPU, 8188MiB)
+Model summary (fused): 72 layers, 3,006,623 parameters, 0 gradients, 8.1 GFLOPs
+[34m[1mval: [0mFast image access  (ping: 0.00.0 ms, read: 3248.2417.4 MB/s, size: 2085.5 KB)
+[34m[1mval: [0mScanning C:\cekmece_yolov8_1\dataset\labels\test.cache... 40 images, 1 backgrounds, 0 corrupt: 100%|##########| 40/40 [00:00<?, ?it/s][34m[1mval: [0mScanning C:\cekmece_yolov8_1\dataset\labels\test.cache... 40 images, 1 backgrounds, 0 corrupt: 100%|##########| 40/40 [00:00<?, ?it/s]
+                 Class     Images  Instances      Box(P          R      mAP50  mAP50-95):   0%|          | 0/3 [00:00<?, ?it/s]                 Class     Images  Instances      Box(P          R      mAP50  mAP50-95):  33%|###3      | 1/3 [00:00<00:01,  1.88it/s]                 Class     Images  Instances      Box(P          R      mAP50  mAP50-95):  67%|######6   | 2/3 [00:01<00:00,  1.81it/s]                 Class     Images  Instances      Box(P          R      mAP50  mAP50-95): 100%|##########| 3/3 [00:01<00:00,  2.22it/s]                 Class     Images  Instances      Box(P          R      mAP50  mAP50-95): 100%|##########| 3/3 [00:01<00:00,  2.10it/s]
+                   all         40        359       0.66      0.479      0.526      0.318
+Speed: 0.1ms preprocess, 0.8ms inference, 0.0ms loss, 0.7ms postprocess per image
+Results saved to [1mC:\cekmece_yolov8_1\results\thesis_plots\native512[0m
+
+=== native640 (imgsz=640, split=test) ===
+Ultralytics 8.3.167  Python-3.12.6 torch-2.5.1+cu121 CUDA:0 (NVIDIA GeForce RTX 4060 Laptop GPU, 8188MiB)
+Model summary (fused): 72 layers, 3,006,623 parameters, 0 gradients, 8.1 GFLOPs
+[34m[1mval: [0mFast image access  (ping: 0.00.0 ms, read: 3961.6385.4 MB/s, size: 2860.1 KB)
+[34m[1mval: [0mScanning C:\cekmece_yolov8_1\dataset\labels\test.cache... 40 images, 1 backgrounds, 0 corrupt: 100%|##########| 40/40 [00:00<?, ?it/s][34m[1mval: [0mScanning C:\cekmece_yolov8_1\dataset\labels\test.cache... 40 images, 1 backgrounds, 0 corrupt: 100%|##########| 40/40 [00:00<?, ?it/s]
+                 Class     Images  Instances      Box(P          R      mAP50  mAP50-95):   0%|          | 0/3 [00:00<?, ?it/s]                 Class     Images  Instances      Box(P          R      mAP50  mAP50-95):  33%|###3      | 1/3 [00:00<00:01,  1.88it/s]                 Class     Images  Instances      Box(P          R      mAP50  mAP50-95):  67%|######6   | 2/3 [00:01<00:00,  1.81it/s]                 Class     Images  Instances      Box(P          R      mAP50  mAP50-95): 100%|##########| 3/3 [00:01<00:00,  2.17it/s]                 Class     Images  Instances      Box(P          R      mAP50  mAP50-95): 100%|##########| 3/3 [00:01<00:00,  2.07it/s]
+                   all         40        359      0.704      0.508      0.583      0.369
+Speed: 0.1ms preprocess, 1.2ms inference, 0.0ms loss, 0.7ms postprocess per image
+Results saved to [1mC:\cekmece_yolov8_1\results\thesis_plots\native640[0m
+
+
+==== PER-CLASS mAP@0.5 (TEST, .pt) ====
+config             |   anahtar |    cakmak |     kalem |     makas | tirnak_ma
+trained800_in320   |     0.211 |     0.198 |     0.316 |     0.514 |     0.141
+trained800_in512   |     0.691 |     0.460 |     0.571 |     0.776 |     0.410
+trained800_in640   |     0.727 |     0.539 |     0.624 |     0.822 |     0.466
+trained800_in800   |     0.764 |     0.628 |     0.638 |     0.878 |     0.539
+native320          |     0.244 |     0.304 |     0.405 |     0.604 |     0.113
+native512          |     0.594 |     0.441 |     0.549 |     0.774 |     0.271
+native640          |     0.731 |     0.506 |     0.625 |     0.725 |     0.328
+
+==== PER-CLASS mAP@0.5:0.95 (TEST, .pt) ====
+config             |   anahtar |    cakmak |     kalem |     makas | tirnak_ma
+trained800_in320   |     0.073 |     0.097 |     0.140 |     0.324 |     0.091
+trained800_in512   |     0.349 |     0.302 |     0.330 |     0.578 |     0.253
+trained800_in640   |     0.407 |     0.376 |     0.389 |     0.603 |     0.324
+trained800_in800   |     0.431 |     0.432 |     0.429 |     0.649 |     0.361
+native320          |     0.076 |     0.182 |     0.237 |     0.397 |     0.071
+native512          |     0.276 |     0.276 |     0.327 |     0.526 |     0.184
+native640          |     0.391 |     0.340 |     0.401 |     0.503 |     0.210
