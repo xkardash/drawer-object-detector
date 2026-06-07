@@ -23,6 +23,10 @@ dependencies:
   # On-device latency/thermal logging (K4) — writes CSV to app external dir
   path_provider: ^2.1.4
 
+  # Batch eval mode (Görev 3): decode bundled test JPEGs in pure Dart so the
+  # phone can produce predictions on the test set for PC-side mAP comparison.
+  image: ^4.3.0
+
 dev_dependencies:
   flutter_test:
     sdk: flutter
@@ -41,3 +45,10 @@ flutter:
     - assets/models/cekmece_v4_native640_fp32.tflite
     - assets/models/cekmece_v4_native800_fp32.tflite
     - assets/models/labels.txt
+
+    # Görev 3 batch-eval only (not used by the live camera): the two 800-trained
+    # downscaled exports (800@320, 800@640) round out the PC-vs-phone mAP study,
+    # and the 40 test images are bundled so the phone can predict on them.
+    - assets/models/cekmece_v4_fp32_320.tflite
+    - assets/models/cekmece_v4_fp32_640.tflite
+    - assets/eval_images/

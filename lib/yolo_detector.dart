@@ -80,6 +80,9 @@ class YoloDetector {
   // = IsolateInterpreter'ın kare başına buffer-kopya maliyeti.
   double pureInferenceMs = 0;
   int _perfFrame = 0;
+  // Görev 3 batch-eval: wall-clock of the most recent detectDecoded() inference
+  // (isolate copy + native run), so the eval runner can report a per-model mean.
+  double lastInferenceMs = 0;
 
   static const String labelsPath = 'assets/models/labels.txt';
 
@@ -92,11 +95,30 @@ class YoloDetector {
   double get infMs => _emaInf;
   double get parseMs => _emaParse;
 
-  Future<void> loadModel(ModelSize size) async {
+  /// Camera path: load a bundled native fp32 model by [ModelSize], honoring the
+  /// compile-time [_useGpuDelegate] backend choice. Thin wrapper over the
+  /// generic [loadModelFromAsset].
+  Future<void> loadModel(ModelSize size) => loadModelFromAsset(
+        size.assetPath,
+        size.pixels,
+        label: size.label,
+        useGpu: _useGpuDelegate,
+      );
+
+  /// Generic loader used by both the camera path and the batch-eval harness
+  /// (Görev 3). [useGpu] is a RUNTIME flag here (not the compile-time const) so
+  /// the eval screen can A/B the GPU delegate (fp16 internally) against pure-CPU
+  /// fp32 (XNNPACK, 4 threads) on the very same model/build.
+  Future<void> loadModelFromAsset(
+    String assetPath,
+    int inputSize, {
+    String? label,
+    bool useGpu = _useGpuDelegate,
+  }) async {
     await close();
 
-    _inputSize = size.pixels;
-    _currentModel = size.label;
+    _inputSize = inputSize;
+    _currentModel = label ?? '$inputSize';
 
     // Try GPU delegate first (Adreno on Android via OpenCL).
     // Fall back to multi-threaded CPU + XNNPACK if GPU init fails.
@@ -104,7 +126,7 @@ class YoloDetector {
     //   inferencePreference: 1 = SUSTAINED_SPEED (vs FAST_SINGLE_ANSWER=0)
     //   inferencePriority1:  2 = MIN_LATENCY    (vs MAX_PRECISION=1)
     Interpreter? interp;
-    if (Platform.isAndroid && _useGpuDelegate) {
+    if (Platform.isAndroid && useGpu) {
       try {
         final gpu = GpuDelegateV2(
           options: GpuDelegateOptionsV2(
@@ -114,7 +136,7 @@ class YoloDetector {
           ),
         );
         final opts = InterpreterOptions()..addDelegate(gpu);
-        interp = await Interpreter.fromAsset(size.assetPath, options: opts);
+        interp = await Interpreter.fromAsset(assetPath, options: opts);
         _gpuDelegate = gpu;
         _gpuActive = true;
         debugPrint('YoloDetector: GPU delegate active');
@@ -126,7 +148,7 @@ class YoloDetector {
     }
     if (interp == null) {
       final opts = InterpreterOptions()..threads = 4;
-      interp = await Interpreter.fromAsset(size.assetPath, options: opts);
+      interp = await Interpreter.fromAsset(assetPath, options: opts);
     }
     _interpreter = interp;
 
@@ -242,6 +264,60 @@ class YoloDetector {
     _recordTiming(preUs, infUs, parseUs);
 
     return DetectionFrame(detections, pp.rotatedWidth, pp.rotatedHeight);
+  }
+
+  /// Batch-eval inference on a decoded still image (Görev 3). Runs the SAME
+  /// interpreter + output parse + NMS as the live camera path, but from a
+  /// letterboxed file (no rotation) and at mAP-faithful thresholds
+  /// (conf=0.001, iou=0.7 — Ultralytics `val` defaults) so the produced
+  /// predictions are directly comparable to the PC TFLite pipeline.
+  ///
+  /// [rgb] = tightly-packed RGB bytes (width*height*3). Returned [Detection]
+  /// bboxes are in ORIGINAL-image pixel coordinates.
+  Future<List<Detection>> detectDecoded(
+    Uint8List rgb,
+    int width,
+    int height, {
+    double confThreshold = 0.001,
+    double iouThreshold = 0.7,
+    int maxDet = 300,
+  }) async {
+    final interp = _isolateInterpreter;
+    if (interp == null || _inputBuffer == null || _outputBuffer == null) {
+      return const [];
+    }
+
+    final pp = fillFloat32InputBufferFromRgb(
+      rgb: rgb,
+      imgWidth: width,
+      imgHeight: height,
+      targetSize: _inputSize,
+      buffer: _inputBuffer!,
+    );
+
+    final sw = Stopwatch()..start();
+    await interp.runForMultipleInputs(
+      [_inputBuffer!.buffer],
+      {0: _outputBuffer!.buffer},
+    );
+    lastInferenceMs = sw.elapsedMicroseconds / 1000.0;
+
+    final dets = _parseOutput(
+      _outputBuffer!,
+      _outChannels,
+      _outAnchors,
+      pp,
+      _inputSize,
+      confThreshold,
+      iouThreshold,
+    );
+    // Cap to the highest-confidence [maxDet] (Ultralytics val max_det=300) so
+    // the prediction set matches the PC pipeline at conf=0.001.
+    if (dets.length > maxDet) {
+      dets.sort((a, b) => b.confidence.compareTo(a.confidence));
+      return dets.sublist(0, maxDet);
+    }
+    return dets;
   }
 
   void _recordTiming(int preUs, int infUs, int parseUs) {

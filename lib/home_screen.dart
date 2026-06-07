@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'detection.dart';
 import 'detection_painter.dart';
+import 'eval_screen.dart';
 import 'latency_logger.dart';
 import 'tracker.dart';
 import 'yolo_detector.dart';
@@ -316,6 +317,29 @@ class _HomeScreenState extends State<HomeScreen>
     if (mounted) setState(() => _status = 'Ready');
   }
 
+  /// Görev 3: open the batch-eval (mAP) screen. The live camera and the home
+  /// detector must be released first — the eval screen owns its own detector and
+  /// must be free to claim the GPU delegate without contention. On return, the
+  /// live pipeline is rebuilt from scratch via [_initialize].
+  Future<void> _openEval() async {
+    if (_switching) return;
+    final navigator = Navigator.of(context);
+    _switching = true;
+    setState(() => _status = 'Eval modu...');
+    await _camera?.stopImageStream();
+    await _drainInFlight();
+    await _detector.close();
+    await _camera?.dispose();
+    _camera = null;
+    if (!mounted) return;
+    setState(() {}); // camera null → loading view while eval screen is up
+    await navigator.push(
+      MaterialPageRoute(builder: (_) => const EvalScreen()),
+    );
+    _switching = false;
+    if (mounted) await _initialize();
+  }
+
   /// K4: start/stop on-device latency+thermal recording. On stop, writes the CSV
   /// and shows its path. Tip: turn Auto OFF and pick a fixed size before a run so
   /// the thermal curve reflects one model (model_px is logged regardless).
@@ -427,6 +451,8 @@ class _HomeScreenState extends State<HomeScreen>
             _statusChip(),
             const SizedBox(width: 8),
             _recChip(),
+            const SizedBox(width: 8),
+            _testChip(),
             const Spacer(),
             Column(
               crossAxisAlignment: CrossAxisAlignment.end,
@@ -523,6 +549,30 @@ class _HomeScreenState extends State<HomeScreen>
               fontWeight: FontWeight.w600,
               fontFeatures: const [FontFeature.tabularFigures()],
             ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// Görev 3 entry — opens the batch-eval (mAP) screen.
+  Widget _testChip() {
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: _openEval,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+        decoration: BoxDecoration(
+          color: Colors.black.withOpacity(0.55),
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(color: Colors.white24),
+        ),
+        child: const Text(
+          'TEST',
+          style: TextStyle(
+            color: Colors.white70,
+            fontSize: 11,
+            fontWeight: FontWeight.w600,
           ),
         ),
       ),

@@ -208,6 +208,33 @@ kal; başka kaldıraçlara bak (512 model / pipeline restructure / native plugin
 Test script'leri: `export_int8_nms.py`, `test_int8_nms_model.py`, `diagnose_nms_models.py`,
 `test_int8_standard.py`.
 
+#### Cihaz-üstü + PC yeniden üretim (native320, 2026-06-07) — int8 iki ölüm modu kanıtlandı
+
+fp16 ile aynı titizlikte int8 de **native320** üzerinde yeniden üretildi. Tek script:
+`export_test_native320_int8.py` (native320 `best.pt` → kalibrasyonlu int8 export, iki varyant). Çıktı log:
+`int8_native320_failure.log`; figür: `thesis_selected_figures/fig_native320_int8_diagnostic.jpg`; modeller:
+`native_exports/cekmece_v4_native320_int8.tflite` ve `..._int8_nms.tflite`.
+
+**A) Standart int8 (NMS yok) — yüklenir AMA çıktı bozuk (DFL int8 bug).** `allocate_tensors` OK; ama
+per-kanal: `cx min=max=mean=0.00000`, `cy=0.00000` (w/h ve sınıf skorları normal: w∈[0.016,0.617], `makas`
+score 0.859). → bbox **merkezleri sıfıra çöktüğü için hiçbir geçerli kutu çıkmıyor**. Sessiz doğruluk
+hatası (çökme değil); cihazda da aynı graf → app çalışır ama tespit üretmez.
+
+**B) int8 + NMS — yüklenme çökmesi (SELECT op), fp16 gibi.** Hem PC (LiteRT) hem **cihazda** (Redmi Note 11,
+release; boot modeli int8+nms'e yöneltildi) `allocate_tensors` çöküyor:
+```
+E/tflite : select.cc:103 data->has_low_rank_input_condition was not true.
+E/tflite : Node number 264 (SELECT) failed to prepare.
+E/flutter: Unhandled Exception: Bad state: failed precondition
+           #1 Interpreter.allocateTensors  #6 YoloDetector.loadModel  #7 _HomeScreenState._initialize
+```
+→ Uygulama `'Loading model...'` ekranında takılı kaldı (ekran: `int8_nms_device_failure.png`; logcat:
+`int8_nms_device_failure_excerpt.txt`). PC çıktısıyla birebir (`select.cc`, Node 264, SELECT).
+
+**Tez çıkarımı:** int8 bu model+toolchain'de **iki bağımsız** nedenle dağıtılamaz — (A) DFL int8 nicemleme
+merkez koordinatlarını çökertir, (B) gömülü-NMS grafiği SELECT op'u nedeniyle yüklenmez. fp16 (yüklenmez)
+ile birlikte → **tek dağıtılabilir yol native fp32**.
+
 ---
 
 ## Performans Sonuçları (Redmi Note 11, release mode)
@@ -375,8 +402,11 @@ weights'ten zaten dequantize ediyor. Test edilmesi gerek.
 > **GÜNCELLEME (2026-06-06): fp16 dağıtımı BAŞARISIZ → native fp32'ye dönüldü.** fp16 TFLite
 > **iki platformda da yüklenemedi**: (1) PC CPU referans kernel'i float16 conv girişini desteklemiyor
 > (`CONV_2D ... input_type float16 was not true` — bkz. aşağı, "fp16 PC CPU'da ÇALIŞMADI"); (2)
-> **telefonda da model yüklenmedi** (interpreter init/allocate başarısız, uygulama takıldı — kullanıcı
-> teyidi). Sonuç: **dağıtılan model = native fp32** (`pubspec.yaml` + `yolo_detector.dart` yalnız
+> **telefonda da model yüklenmedi**: GPU delegate **ve** CPU fallback'in ikisi de `CONV_2D failed to
+> prepare` ile çöktü → `allocateTensors` `Bad state: failed precondition` fırlattı → uygulama
+> `'Loading model...'` ekranında **kalıcı takıldı**. **2026-06-07'de cihaz logcat'i + ekran görüntüsü
+> ile birebir kanıtlandı** (artık "kullanıcı teyidi" değil — bkz. aşağıdaki "Cihaz-üstü yeniden üretim
+> (2026-06-07)"). Sonuç: **dağıtılan model = native fp32** (`pubspec.yaml` + `yolo_detector.dart` yalnız
 > `cekmece_v4_native{320,512,640,800}_fp32.tflite` referanslıyor). Aşağıdaki bu bölümdeki tüm fp16 A/B
 > adımları **geçersiz**. **Tez çıkarımı:** Ultralytics `half=True` TFLite export'u GPU-hedefli graf
 > üretir; `tflite_flutter` GPU delegate ile bu cihazda güvenilir yüklenmedi → **fp32 native tek
@@ -385,8 +415,14 @@ weights'ten zaten dequantize ediyor. Test edilmesi gerek.
 **[TARİHSEL — geri alınan deneme]** `export_fp16.py` (kök) ile `best.pt`'den 320/512/640/800 fp16 TFLite üretildi
 (`YOLO(...).export(format="tflite", half=True, imgsz=N)` → `best_float16.tflite` kopyalandı).
 - **Boyut**: fp32 11.9 MB → **fp16 6.0 MB** (tam yarısı). Daha hızlı yükleme, daha az bellek.
-- **I/O tensörleri float32 kalır** → `Float32List` buffer kodu DEĞİŞMEDEN çalışıyor. `loadModel`'e
-  tensör-tipi float32 doğrulaması eklendi (B1 dersi: hata sessizce yutulmasın → tip yanlışsa `StateError`).
+- **DÜZELTME (2026-06-07, ölçümle):** export'un float32 I/O koruyacağı VARSAYILMIŞTI (aşağıdaki
+  tip-guard bu varsayımla eklendi). Gerçekte `half=True` export **float16 I/O** üretiyor
+  (in=out=`float16` — `reproduce_fp16_load_failure.py` ile 320/640/800'de doğrulandı). Bu yüzden
+  `loadModel`'deki float32 tip-guard'ına **sıra bile gelmiyor**: interpreter `allocate_tensors`'ta
+  daha önce çöküyor: `conv.cc:363 input_type == kTfLiteFloat32 || ... was not true. Node number 1
+  (CONV_2D) failed to prepare.` Başarısızlığın kökü I/O değil, **graf-içi float16 aktivasyonların**
+  CONV_2D prepare aşamasında reddedilmesi; float16 I/O bunun yüzeydeki belirtisi. Tip-guard tarihsel
+  olarak korunuyor (B1 dersi: hata sessizce yutulmasın).
 - **Beklenti (dürüst)**: GPU delegate zaten `isPrecisionLossAllowed` ile fp16 hesaplıyordu, bu yüzden
   steady-state GPU FPS kazancı GARANTİ DEĞİL. Kesin kazanç: yükleme/bellek. FPS etkisi **cihazda ölçülecek**.
 - fp32 dosyaları silinmedi; `pubspec.yaml`'de hâlâ listeli → A/B için `ModelSize.assetPath`'i flip'le.
@@ -565,13 +601,46 @@ ihmal edilebilir düzeyde (≤~3 puan) etkiler — model dağıtıma sadık biç
 **fp16 .tflite — PC CPU'da ÇALIŞMADI (önemli bulgu):**
 Sekiz fp16 validation'ın hepsi `CONV_2D ... input_type float16 was not true` ile patladı. Ultralytics'in
 `half=True` TFLite export'u **GPU-hedefli** graf üretir (aktivasyonlar float16); plain CPU referans
-kernel'i float16 conv girişini desteklemez. Telefonda **GPU delegate** ile çalışır (uygulamada böyle), ama:
+kernel'i float16 conv girişini desteklemez. **DÜZELTME (2026-06-07):** "telefonda GPU delegate ile
+çalışır" beklentisi YANLIŞ çıktı — fp16 export cihazda da GPU delegate'te `CONV_2D failed to prepare`
+ile yüklenemiyor (bkz. "Cihaz-üstü yeniden üretim"). GPU delegate'in fp16 *hesabı* (fp32 ağırlıkla,
+`isPrecisionLossAllowed`) sorunsuz; sorun fp16'nın **graf formatında** gömülü olması. Ek olarak:
 - fp16 doğruluğu bu yolla PC CPU'da ölçülemedi. float16 nicemlemesi mAP'yi pratikte ~0 değiştirir →
   beklenti **fp16 ≈ fp32**. (Kesin ölçüm için TFLite GPU-delegate runtime gerekir.)
 - **Uygulama riski (Faz 4) — ✅ ÇÖZÜLDÜ (geri dönüş):** fp16 telefonda yüklenemedi (yalnız PC CPU değil,
-  cihazda da init/allocate başarısız — kullanıcı teyidi). "GPU başarısızsa fp32'ye düş" önerisi yerine
+  cihazda da GPU delegate **+** CPU fallback ikisi de `CONV_2D failed to prepare` ile çöktü — 2026-06-07
+  cihaz logcat'i ile kanıtlı, bkz. "Cihaz-üstü yeniden üretim"). "GPU başarısızsa fp32'ye düş" önerisi yerine
   **tüm dağıtım native fp32'ye döndürüldü** (kesin platform-uyumlu, hem GPU delegate hem CPU XNNPACK
   fallback'te çalışır). O6 kapandı: fp16 yolu tamamen terk edildi. Detay: Faz 4 bölümü başındaki güncelleme.
+
+#### Cihaz-üstü yeniden üretim (2026-06-07) — fp16 yükleme hatası kanıtlandı
+
+Önceki "telefonda yüklenmiyor" ifadesi yalnız gözleme dayanıyordu; bu tarihte **kontrollü olarak yeniden
+üretilip kanıtlandı**. `ModelSize.s640` geçici olarak `cekmece_v4_fp16_640.tflite`'a yöneltildi,
+`_useGpuDelegate=true` (orijinal dağıtım senaryosu) ile release APK build edilip Redmi Note 11'e (SD680)
+kuruldu; ardından kod `git checkout` ile geri alındı ve temiz fp32 APK yeniden kuruldu.
+
+**Sonuç — tek koşuda iki yol da çöktü** (ham logcat → `fp16_device_failure_excerpt.txt`):
+```
+I/tflite : Created TensorFlow Lite delegate for GPU.
+E/tflite : conv.cc:360 input_type == kTfLiteFloat32 || ... was not true.
+E/tflite : Node number 1 (CONV_2D) failed to prepare.
+I/flutter: YoloDetector: GPU delegate failed (Unable to create interpreter.) — falling back to CPU
+E/tflite : conv.cc:360 ... was not true.          ← CPU fallback da aynı hata
+E/tflite : Node number 1 (CONV_2D) failed to prepare.
+E/flutter: Unhandled Exception: Bad state: failed precondition
+           #1 Interpreter.allocateTensors  #6 YoloDetector.loadModel  #7 _HomeScreenState._initialize
+```
+→ Uygulama `'Loading model...'` ekranında **kalıcı takıldı** (ekran görüntüsü: `fp16_device_failure.png`).
+
+**Çapraz doğrulama (PC, deterministik):** `reproduce_fp16_load_failure.py`, cihazdaki `tflite_flutter`'ın
+sardığı **aynı LiteRT runtime ailesiyle** üç fp16 boyutunu da (320/640/800) aynı `CONV_2D ... was not true`
+hatasıyla düşürür; üç native fp32 kontrolü temiz allocate olur (log: `fp16_load_failure.log`). Ölçülen I/O:
+fp16 = `float16` (in=out), fp32 = `float32`. **Kök neden:** graf-içi float16 aktivasyonlar CONV_2D
+prepare'da reddedilir (delegate'ten bağımsız); float16 I/O bunun yüzeydeki belirtisi.
+
+**Artifact'ler (tez figür/listing kaynağı):** `fp16_device_failure.png` · `fp16_device_failure_excerpt.txt`
+· `fp16_device_failure_logcat_full.txt` · `reproduce_fp16_load_failure.py` · `fp16_load_failure.log`.
 
 #### Native-çözünürlük eğitimi vs 800px-downscale (fp32, tez merkez bulgusu — 2026-06-06)
 
@@ -1127,6 +1196,87 @@ başlamasın" için yeterli, "mevcut iş bitsin" için değil.
 
 ---
 
+## Faz 6 — Telefon vs PC TFLite mAP: cihaz-üstü dağıtım doğruluğu (2026-06-07)
+
+**Amaç:** Aynı 5 fp32 TFLite modelin mAP'ını **PC TFLite** ile **telefon (GPU delegate AÇIK/KAPALI)**
+arasında ölçüp karşılaştırmak. Bu faz, **K1**'in açık bıraktığı boşluğu — *"Adreno/TFLite delegate
+op-kernel'lerinin birebir cihaz ölçümü yapılmadı; yalnız fp16-proxy ile izole edildi"* — **doğrudan kapatır.**
+Önceki tüm mAP'lar PC/CPU/fp32 idi; burada doğruluk **cihazın kendisinde** (GPU fp16 + CPU fp32) ölçülüyor.
+
+İlke: **telefon yalnız prediction üretir, mAP PC'de hesaplanır.** mAP hesabı cihazda yapılmak zorunda değil;
+ölçmek istediğimiz "aynı model telefonda test görsellerine ne üretiyor". Tahminler PC'ye çekilip GT ile mAP'a
+dönüştürülür.
+
+### Metodoloji — neyi, neyle, nasıl ölçtük
+- **5 model:** native320/640/800 (kendi çözünürlüğünde eğitilmiş) + 800@320, 800@640 (800-eğitimli modelin
+  320/640'a export'u). Hepsi fp32 I/O, 5 sınıf, çıktı `[1,9,A]`.
+- **Test seti:** `dataset/images/test` (40 görüntü, **359 kutu**), GT = `dataset/labels/test`, sınıflar
+  `data.yaml`'dan.
+- **Telefon (Redmi Note 11):** yeni **Batch Eval** ekranı (`lib/eval_screen.dart` + `lib/eval_runner.dart`).
+  40 test görüntüsü uygulamaya **asset** olarak gömülü. Her görüntü: decode → letterbox → **canlı kamerayla
+  aynı interpreter** → aynı çıktı-parse + NMS. Her (model × backend) için bir JSON yazılır
+  (`eval_<label>_<gpu|cpu>.json`, uygulama harici dizini), `adb pull` ile çekilir.
+- **İki backend, tek değişken:** GPU delegate **AÇIK** (Adreno OpenCL, `isPrecisionLossAllowed:true` →
+  dahili fp16) ve **KAPALI** (CPU fp32, XNNPACK 4 thread). Her GPU koşusunda `gpu_active=true` doğrulandı.
+- **PC tarafı:** aynı 5 model, **`ai_edge_litert`** (LiteRT — telefonla **aynı runtime ailesi**) ile,
+  **Dart koduyla birebir eşleşmiş** letterbox + parse + NMS (`eval_phone_vs_pc.py`).
+- **Eşleştirme (kritik):** iki tarafta da **conf=0.001, iou=0.7, max_det=300** (Ultralytics `val`
+  varsayılanları), aynı **kare-içi-en-yakın letterbox** (114-gri pad, rotasyon yok), aynı sınıf-içi greedy
+  NMS. Geriye tek fark olarak **runtime** kalır (PC CPU fp32 · telefon GPU fp16 · telefon CPU fp32) →
+  **Δ = saf dağıtım etkisi.** (Canlı kamera UI'si kendi conf=0.30/iou=0.45 değerlerini korur; değişmedi.)
+- **mAP:** COCO tarzı 101-nokta interpolasyonlu AP, sınıf-başı; mAP@0.5 ve mAP@0.5:0.95.
+- **Harness doğrulaması:** custom mAP vs **Ultralytics `val`** (800@640, test split) →
+  **mAP50-95 0.4060 vs 0.4082 (Δ0.002)**; mAP50 0.6296 vs 0.6133 (fark = Ultralytics'in dikdörtgen-bilineer
+  letterbox'ı vs bizim kare-en-yakın'ımız — telefon da **aynı** kare-en-yakın'ı kullandığından
+  telefon↔PC eşleşmesi bozulmaz). Yani mAP hesabı bağımsız doğrulandı.
+
+### Doğruluk sonuçları — mAP (test seti, 40 görüntü). Δ = telefon − PC.
+| Model | PC mAP50 | GPU mAP50 | Δ | CPU mAP50 | Δ | PC mAP50-95 | GPU mAP50-95 | Δ | CPU mAP50-95 | Δ |
+|-------|----------|-----------|------|-----------|------|-------------|--------------|------|--------------|------|
+| native320 | 0.3362 | 0.3312 | −0.0050 | 0.3285 | −0.0078 | 0.1839 | 0.1841 | +0.0003 | 0.1840 | +0.0001 |
+| native640 | 0.5986 | 0.5984 | −0.0002 | 0.5989 | +0.0003 | 0.3743 | 0.3700 | −0.0043 | 0.3738 | −0.0005 |
+| native800 | 0.6780 | 0.6789 | +0.0009 | 0.6797 | +0.0017 | 0.4572 | 0.4569 | −0.0004 | 0.4574 | +0.0001 |
+| 800@320 | 0.2444 | 0.2443 | −0.0001 | 0.2442 | −0.0002 | 0.1315 | 0.1303 | −0.0012 | 0.1318 | +0.0003 |
+| 800@640 | 0.6296 | 0.6318 | +0.0022 | 0.6342 | +0.0046 | 0.4060 | 0.4066 | +0.0006 | 0.4104 | +0.0044 |
+
+### Hız sonuçları — cihaz-üstü inference (batch-eval, ms/görüntü, isolate kopya dahil)
+| Model | GPU fp16 ms | CPU fp32 ms | CPU/GPU |
+|-------|-------------|-------------|---------|
+| native320 | 67.4 | 124.3 | **1.84×** |
+| native640 | 219.5 | 398.8 | **1.82×** |
+| native800 | 368.9 | 611.0 | **1.66×** |
+| 800@320 | 67.9 | 141.8 | **2.09×** |
+| 800@640 | 221.3 | 398.9 | **1.80×** |
+
+(Faz 5'in canlı-kamera "pure" sayılarından farklı ölçüm noktası — burada tek görüntü + isolate kopyası dahil —
+ama aynı ~1.7–2.1× GPU üstünlüğünü bağımsız olarak teyit eder.)
+
+### Ana bulgu (tez için)
+- **Cihaz-üstü mAP ≈ PC mAP.** Tüm sapmalar **|Δ| ≤ 0.008 (mAP50)** ve **≤ 0.0044 (mAP50-95)** — bootstrap CI
+  yarı-genişliğinin (±0.08) **~10× altında**, yani gürültü düzeyinde. Hem **GPU-fp16** hem **CPU-fp32** telefon
+  yolu PC TFLite doğruluğunu **yeniden üretir.** "Cihaz ≈ PC fp32" iddiası artık **proxy değil, doğrudan ölçüm.**
+- **GPU delegate'in dahili fp16'sı doğruluk-nötr.** GPU vs PC en büyük sapma −0.0050 (native320 mAP50); gerisi
+  ±0.002 civarı. fp16-proxy bulgusunu (PyTorch `half=True`, max |Δ|=0.002) **gerçek Adreno delegate'inde** teyit
+  eder.
+- **GPU ≈ CPU doğrulukta, ama ~1.8× hızlı.** Telefon GPU vs CPU mAP'ları birbirine de neredeyse eşit; hız ise
+  1.66–2.09× (ort ~1.8×) GPU lehine. → **GPU delegate = bedava hızlanma, sıfır doğruluk maliyeti.** "GPU delegate
+  kullan" kararı hem hız hem doğruluk açısından niceliksel doğrulandı.
+- **Model sıralaması cihazda korunur:** native800 (0.678) > 800@640 (0.630) > native640 (0.599) >
+  native320 (0.336) > 800@320 (0.244). Düşük çözünürlükte **native eğitim 800-downscale'i açık ara geçer**
+  (native320 0.336 vs 800@320 0.244, **+0.092 mAP50**) → native-çözünürlük tezi cihaz-üstü dağıtımda da geçerli.
+
+### Yeniden üretim
+- **Artifact'ler:** `phone_eval/` (10 JSON: 5 model × {gpu,cpu}), `pc_eval/` (5 PC JSON),
+  `phone_vs_pc_map.md` + `.csv` (tablo).
+- **Telefon:** uygulamada **TEST** chip → **"Tümü × GPU+CPU"** (veya anahtarla GPU/CPU ayrı) → bitince
+  `adb pull /sdcard/Android/data/com.cekmece.cekmece_detector/files/eval_out`.
+- **PC:** `python eval_phone_vs_pc.py` (gerekirse `--skip-pc` ile PC tahminlerini yeniden üretmeden).
+- **Kod:** `lib/eval_runner.dart`, `lib/eval_screen.dart`, `lib/yolo_detector.dart`
+  (`detectDecoded` + `loadModelFromAsset` runtime GPU bayrağı), `lib/image_utils.dart`
+  (`fillFloat32InputBufferFromRgb`), `eval_phone_vs_pc.py`.
+
+---
+
 ## Kısıtlar ve Geçerlilik Tehditleri (Limitations & Threats to Validity) — 2026-06-06
 
 Bulguların dürüst sınırları. Tez "Tartışma/Kısıtlar" bölümünün temeli; jüri zaten bunları arar. Birçoğu
@@ -1139,6 +1289,8 @@ kontrolü): PyTorch `half=True` vs fp32 → **max |Δ| = 0.002** (CI'nin ~40× a
 doğruluk-nötr, "cihaz ≈ PC fp32" desteklendi. Ek olarak fp32 `.tflite` export sadakati de ölçüldü
 (≤0.007–0.03). *Kalan (küçük) boşluk:* Adreno/TFLite delegate op-kernel'lerinin birebir cihaz ölçümü
 yapılmadı (yalnız yarım-hassasiyet etkisi izole edildi).
+**→ KAPATILDI (Faz 6, 2026-06-07):** cihaz-üstü mAP artık doğrudan ölçüldü (GPU-fp16 + CPU-fp32, 5 model,
+test seti); telefon ↔ PC fp32 farkı **|Δ| ≤ 0.008 mAP50** çıktı → "cihaz ≈ PC fp32" **doğrudan** doğrulandı.
 
 **K2. Küçük, tek-bölünmeli veri seti; çapraz doğrulama yok.**
 400 train / 40 val / 40 test, **tek sabit split**. Tüm sayılar bu bölünmeye koşulludur ve "best epoch"

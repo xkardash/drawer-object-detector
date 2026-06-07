@@ -131,3 +131,66 @@ PreprocessResult fillFloat32InputBufferFromCameraImage({
     padY: padY,
   );
 }
+
+/// Batch-eval counterpart of [fillFloat32InputBufferFromCameraImage]: fills
+/// [buffer] (length = 1*size*size*3) with NHWC float32 [0..1] pixels from a
+/// decoded still image, applying the SAME letterbox-resize (scale to the long
+/// edge, centered 114-grey padding, integer-nearest sampling) but NO rotation.
+///
+/// [rgb] is tightly-packed RGB bytes (length = imgWidth*imgHeight*3), as
+/// produced by `img.Image.getBytes(order: ChannelOrder.rgb)`. The returned
+/// [PreprocessResult] carries the ORIGINAL image dimensions, so the unchanged
+/// [YoloDetector._parseOutput] maps boxes straight back to original-image
+/// pixels — exactly the coordinate space the PC-side GT labels live in.
+PreprocessResult fillFloat32InputBufferFromRgb({
+  required Uint8List rgb,
+  required int imgWidth,
+  required int imgHeight,
+  required int targetSize,
+  required Float32List buffer,
+}) {
+  final double scale = targetSize / (imgWidth > imgHeight ? imgWidth : imgHeight);
+  final int newW = (imgWidth * scale).round();
+  final int newH = (imgHeight * scale).round();
+  final int padX = (targetSize - newW) >> 1;
+  final int padY = (targetSize - newH) >> 1;
+
+  const double pad = 114.0 / 255.0;
+  final double invScale = 1.0 / scale;
+
+  int outIdx = 0;
+  for (int ty = 0; ty < targetSize; ty++) {
+    final int ry = ((ty - padY) * invScale).toInt();
+    final bool rowInside = ry >= 0 && ry < imgHeight;
+
+    for (int tx = 0; tx < targetSize; tx++) {
+      if (!rowInside) {
+        buffer[outIdx++] = pad;
+        buffer[outIdx++] = pad;
+        buffer[outIdx++] = pad;
+        continue;
+      }
+
+      final int rx = ((tx - padX) * invScale).toInt();
+      if (rx < 0 || rx >= imgWidth) {
+        buffer[outIdx++] = pad;
+        buffer[outIdx++] = pad;
+        buffer[outIdx++] = pad;
+        continue;
+      }
+
+      final int src = (ry * imgWidth + rx) * 3;
+      buffer[outIdx++] = rgb[src] / 255.0;
+      buffer[outIdx++] = rgb[src + 1] / 255.0;
+      buffer[outIdx++] = rgb[src + 2] / 255.0;
+    }
+  }
+
+  return PreprocessResult(
+    rotatedWidth: imgWidth,
+    rotatedHeight: imgHeight,
+    scale: scale,
+    padX: padX,
+    padY: padY,
+  );
+}
