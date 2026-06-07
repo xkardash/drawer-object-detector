@@ -54,7 +54,7 @@ class _HomeScreenState extends State<HomeScreen>
 
   bool _processing = false;
   bool _switching = false; // model reload in progress → drop frames
-  ModelSize _modelSize = ModelSize.s640; // auto-mode fallback / manual selection
+  ModelSize _modelSize = ModelSize.s640; // boot model (manual) + auto fallback
   double _confThreshold = 0.30;
   DateTime _lastFrameTs = DateTime.now();
   String _status = 'Initializing...';
@@ -64,7 +64,11 @@ class _HomeScreenState extends State<HomeScreen>
   // (PERFORMANCE.md) to pick the largest size within the FPS budget; one runtime
   // correction claims/returns headroom. No continuous switching — a model reload
   // recompiles GPU kernels (~1–3s, no cache API), so oscillation is avoided.
-  bool _auto = true;
+  // Default OFF for the CPU-only fp32 latency study: the 70ms budget is
+  // GPU-calibrated (would always pick 320 on CPU) and a mid-run switch would
+  // taint a per-size recording. Boot into a fixed size; the "Oto" chip still
+  // re-enables it on demand.
+  bool _auto = false;
   bool _autoSettled = false;
   int _autoFrames = 0;
   static const double _autoBudgetMs = 70; // ~12 FPS pure-inference budget
@@ -195,9 +199,20 @@ class _HomeScreenState extends State<HomeScreen>
     }
   }
 
-  /// Core model reload: stop stream → close → load → restart. Guarded by
-  /// [_switching] so no frame runs detect() against a closing interpreter.
-  /// Does not touch [_auto]/[_status] so callers decide the mode semantics.
+  /// Block until the in-flight detect() (if any) completes, so the interpreter
+  /// is never closed mid-inference. close() frees the native interpreter while
+  /// the background isolate may still be running it → use-after-free → crash.
+  /// The window is large on CPU (~1–2 s/frame at 800px), so a mid-inference
+  /// model switch reliably crashed; draining first fixes it.
+  Future<void> _drainInFlight() async {
+    while (_processing) {
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+    }
+  }
+
+  /// Core model reload: stop stream → drain in-flight → close → load → restart.
+  /// Guarded by [_switching] so no NEW frame runs detect() against a closing
+  /// interpreter. Does not touch [_auto]/[_status] so callers decide semantics.
   Future<void> _reloadModel(ModelSize size) async {
     _switching = true;
     _fps.value = 0;
@@ -205,6 +220,7 @@ class _HomeScreenState extends State<HomeScreen>
     _overlay.value = const _OverlayFrame([], Size(640, 640));
     _lastOverlayEmpty = true;
     await _camera?.stopImageStream();
+    await _drainInFlight();
     await _detector.close();
     await _detector.loadModel(size);
     _modelSize = size;
@@ -292,6 +308,7 @@ class _HomeScreenState extends State<HomeScreen>
     _overlay.value = const _OverlayFrame([], Size(640, 640));
     _lastOverlayEmpty = true;
     await _camera?.stopImageStream();
+    await _drainInFlight();
     await _detector.close();
     await _loadAuto();
     if (mounted) await _camera!.startImageStream(_onFrame);

@@ -1024,6 +1024,71 @@ ama farkın kaynağı olan yarım-hassasiyet numeriğinin etkisiz olduğu göste
 
 ---
 
+## Faz 5 — saf CPU fp32 (GPU delegate kapalı) gecikme çalışması (2026-06-07)
+
+**Araştırma sorusu:** Önceki tüm cihaz-üstü FPS sayıları **GPU delegate** ile alındı; delegate
+`isPrecisionLossAllowed:true` ile içeride **fp16** hesaplıyordu (yani "fp32 model" deniyor olsa da compute
+fp16'ydı). Bu faz **gerçek fp32 compute maliyetini** GPU olmadan ölçer: delegate kapatılıp **saf CPU
+(XNNPACK, 4 thread)** ile koşuldu. Amaç: (1) fp16-GPU yolunun sağladığı hızlanmayı niceliklemek, (2)
+"delegate olmadan bu cihaz fp32'yi gerçek-zamanlı koşturabilir mi?" sorusunu yanıtlamak.
+
+**Kurulum:** `YoloDetector._useGpuDelegate=false` (kod anahtarı; `true`=GPU A/B için saklı). Native fp32
+.tflite (320/640/800), I/O float32 (fp16'nın aksine sorunsuz allocate olur). Redmi Note 11 (SD680),
+release. Ölçüm: K4 on-device logger — per-frame `total_ms=pre+inf+parse`, `dt_ms` kareler-arası gecikme,
+`pure_ms` yükleme-anı saf-inference benchmark. Ham veri: `tez_icin_veriler/cpu_fp32_csv/cpu_fp32_{640,320}.csv`.
+
+### Ölçülen (CPU fp32, Redmi Note 11, release)
+
+| Giriş | pure inf (ms) | total p50 | total p95 | total p99 | dt p50 (ms) | FPS (1000/dt p50) | kare / süre |
+|-------|---------------|-----------|-----------|-----------|-------------|-------------------|-------------|
+| 320 | 112.0 | 154.6 | 242.7 | 263.6 | 176 | **5.68** | 190 / 35 s |
+| 640 | 416.7 | 545.4 | 637.3 | 665.2 | 542 | **1.85** | 77 / 43 s |
+| 800 | ~670 (ekstrapole) | ~850 (ekstrapole) | — | — | — | **~1.1–1.3** | ⚠ ölçülemedi |
+
+> ⚠ **800 ölçümü kayboldu (dürüst not):** 800 kaydı ilk build ile alınmıştı; switch-crash fixi için
+> yeniden kurulum (`flutter install` "Uninstalling old version...") Android'in `/Android/data/<pkg>/files/`
+> dizinini sildiğinden CSV silindi. 320/640 PC'ye çekilmişti → güvende. 800 satırı **size² yasasından
+> ekstrapolasyon** (pure 416.7×(800/640)²≈651, ortalama-katsayıyla ≈676 → ~670 ms; total ≈545×1.5625≈850 ms).
+> İstenirse tek build ile (varsayılan 800) yeniden ölçülebilir; bir sonraki kayıttan **önce** reinstall
+> yapılmamalı (CSV'yi önce çek).
+
+### CPU fp32 vs GPU fp16 — ana bulgu
+
+GPU delegate sayıları = yukarıdaki "fp32 baseline — cihaz ölçümü" tablosu (Adreno OpenCL, fp16 compute).
+Aynı cihaz, aynı native modeller, tek değişken = backend:
+
+| Giriş | GPU fp16 pure | CPU fp32 pure | CPU/GPU gecikme | GPU FPS | CPU FPS | GPU/CPU throughput |
+|-------|---------------|---------------|-----------------|---------|---------|--------------------|
+| 320 | 61 | 112.0 | **1.84×** | 12 | 5.68 | 2.11× |
+| 640 | 221 | 416.7 | **1.89×** | 4 | 1.85 | 2.16× |
+| 800 | 371 | ~670 (est) | ~1.81× | 2.4 (K4) | ~1.2 (est) | ~2.0× |
+
+**Yorum (tez için):**
+- **fp16-GPU yolu, saf fp32-CPU'ya kıyasla ~1.85× daha düşük gecikme** ve ~2× daha yüksek throughput
+  sağlıyor (üç boyutta da tutarlı). "GPU delegate kullan" mühendislik kararını **niceliksel** doğrular:
+  kazanç hem fp16 aritmetiğinden hem inference'i CPU'dan boşaltmaktan gelir.
+- **size² yasası CPU'da da geçerli:** pure/px² = 320:1.09 · 640:1.02 (×10⁻³ ms/px²), dar bant —
+  GPU'daki (~5.5×10⁻⁴) eğilimin ~1.9× kaymış hali. Maliyet modeli **backend'den bağımsız** doğrulanmış oldu.
+- **Gerçek-zamanlılık:** saf CPU fp32 bu cihazda **hiçbir boyutta akıcı değil** — en hızlı 320 bile yalnız
+  ~5.7 FPS, 640 ~1.85 FPS, 800 ~1 FPS. Kullanılabilir tempo (≥~10 FPS) için **GPU delegate zorunlu**;
+  fp16 hassasiyet-kaybı doğruluğu ihmal edilebilir etkiler (fp16-proxy bölümü) ama hızı ~2× artırır.
+- **Termal:** koşular kısa (35–43 s) → throttle gözlenmedi (dt median drift hafif **negatif**: warmup/EMA
+  oturması). Sürdürülen termal eğri için ≥10 dk koşu gerekir; bu faz **steady-state latency** ölçümüdür.
+
+### B4. Model-switch use-after-free crash (bu fazda bulundu + giderildi)
+**Sorun:** CPU modunda model değiştirince uygulama çöküyordu. **Kök neden:** `_onFrame` bir kareyi
+`detect()`'e sokmuşken (CPU 640/800'de inference ~0.4–0.9 s → uçuşta uzun süre), kullanıcı boyut
+değiştirince `_reloadModel → _detector.close()` çağrılıyor; `close()` native interpreter'ı **inference
+arka-plan isolate'inde hâlâ çalışırken** serbest bırakıyor → use-after-free → SIGSEGV. GPU'da pencere küçük
+(61 ms) olduğundan nadirdi; CPU'nun büyük penceresinde **kesin** crash.
+**Çözüm:** `_reloadModel`/`_enableAuto` içinde stream durdurulduktan sonra `_drainInFlight()` ile uçuştaki
+`detect()` bitene kadar beklenip sonra `close()` çağrılıyor. `_switching` bayrağı zaten **yeni** kareleri
+engelliyordu; eksik olan tek uçuştaki kareyi drain etmekti.
+**Ders:** Native kaynağı serbest bırakmadan önce o kaynağı kullanan async iş tamamlanmalı — bayrak "yeni iş
+başlamasın" için yeterli, "mevcut iş bitsin" için değil.
+
+---
+
 ## Kısıtlar ve Geçerlilik Tehditleri (Limitations & Threats to Validity) — 2026-06-06
 
 Bulguların dürüst sınırları. Tez "Tartışma/Kısıtlar" bölümünün temeli; jüri zaten bunları arar. Birçoğu
@@ -1367,3 +1432,49 @@ Bu liste final tez kaynakçası için adaydır. IEEE biçimine son tez yazımı 
 
 Final kaynakçada gereksiz kalabalığı önlemek için R1-R10 temel kaynaklar olarak yeterlidir; R11-R13 ise sentetik
 veri ve mobil GPU tartışması tezde ne kadar yer kaplayacağına göre eklenebilir.
+
+### Tez görsel seçimi — native `cekmece_v4_141epoch_640imgsz` odaklı liste
+
+Kullanıcı kararı: confusion matrix ve PR curve için **native `cekmece_v4_141epoch_640imgsz`** sonuçları kullanılacak.
+Seçili dosyalar sabit isimlerle `flutter_app/tez_icin_veriler/thesis_selected_figures/` klasörüne kopyalandı.
+
+| tez öğesi | seçilen dosya / kaynak | kullanım notu |
+|-----------|------------------------|---------------|
+| Dataset örneği | `thesis_selected_figures/fig_dataset_native640_labels.jpg` | Karışık çekmece ortamını ve manuel bounding box yoğunluğunu göstermek için. |
+| Uygulama ekran görüntüsü | Kullanıcının gönderdiği telefon fotoğrafı; yerel dosya olarak ayrıca kaydedilmeli | Canlı Flutter uygulamasında bounding box, sınıf etiketi, FPS ve model seçimi görünür. |
+| Ana deney tablo/grafik | PERFORMANCE.md ana deney tabloları: native-N vs 800-trained@N (`Tablo A/B/C`) | Tezde tablo olarak verilmesi önerilir; 320/512/640 native-vs-downscale kıyasının ana kanıtı. |
+| Confusion matrix | `thesis_selected_figures/fig_native640_confusion_matrix_normalized.png` | Native640 sınıf karışıklıklarını oranla gösterir. |
+| PR curve | `thesis_selected_figures/fig_native640_pr_curve.png` | Native640 mAP@0.5 ve sınıf bazlı PR davranışını gösterir. |
+| 320 vs 800 karşılaştırma | `thesis_selected_figures/fig_320_vs_800_comparison_0087.jpg` | Çözünürlük artışının tespit sayısına etkisini görsel olarak gösterir (320px: 2, 800px: 9 tespit). |
+| Latency grafiği | `thesis_selected_figures/fig_latency_thermal.png` | Redmi Note 11 cihazında latency/FPS/termal davranışı için. |
+| INT8 negatif sonuç figürü | `thesis_selected_figures/fig_native640_int8_diagnostic_0087.jpg` | Native640 INT8 export denemesinde `cx/cy` koordinatlarının 0'a çökmesini ve tespit üretilememesini gösterir. |
+
+**Uygulama ekran görüntüsü notu:** Sohbete gönderilen fotoğraf tez için uygundur; ancak DOCX üretiminde kullanmak
+için aynı görselin proje klasörüne dosya olarak kaydedilmesi gerekir. Önerilen yol:
+`flutter_app/tez_icin_veriler/thesis_selected_figures/fig_app_screenshot_native640.jpg`.
+
+### Native640 INT8 diagnostic — tez için negatif dağıtım kanıtı
+
+Kullanıcı isteğiyle native `cekmece_v4_141epoch_640imgsz` modelinin INT8 TFLite export'u ayrıca test edilmiştir.
+Script: `export_test_native640_int8.py`. Test görseli: `dataset/images/test/0087_jpg.rf.VbQnnnDVMfxstb64jImx.jpg`.
+
+Çıktılar:
+
+- INT8 model: `flutter_app/tez_icin_veriler/native_exports/cekmece_v4_native640_int8.tflite` (~3.0 MB)
+- Log: `flutter_app/tez_icin_veriler/native_int8_diagnostic.log`
+- Figür: `flutter_app/tez_icin_veriler/thesis_selected_figures/fig_native640_int8_diagnostic_0087.jpg`
+
+Diagnostic sonucu:
+
+| kanal | min | max | yorum |
+|-------|-----|-----|-------|
+| `cx` | 0.00000 | 0.00000 | tüm anchor'larda merkez x çöktü |
+| `cy` | 0.00000 | 0.00000 | tüm anchor'larda merkez y çöktü |
+| `w` | 0.00781 | 0.78125 | genişlik kanalı sıfıra çökmedi |
+| `h` | 0.00781 | 0.53125 | yükseklik kanalı sıfıra çökmedi |
+| class scores | 0.00000 | 0.90625 | sınıf skorları üretildi |
+
+Sonuç: `DFL/cx-cy collapsed: True`; NMS sonrası tespit sayısı `0`. Bu, INT8 sorununun yalnız 800-trained eski
+export'a özgü olmadığını; native640 modelde de YOLOv8 TFLite INT8 quantization sonrası bbox merkez koordinatlarının
+çöktüğünü gösterir. Bu nedenle INT8 yolu final mobil uygulama için kullanılmamış, final dağıtım fp32 TFLite olarak
+korunmuştur.

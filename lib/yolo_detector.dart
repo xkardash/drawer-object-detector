@@ -19,8 +19,10 @@ enum ModelSize {
   // Native fp32: each size is the model TRAINED at that resolution
   // (cekmece_v4_141epoch_{N}imgsz), not the 800-model downscaled. PERFORMANCE.md
   // shows native training wins clearly at 320 (small-object recall) and ties at
-  // 512/640. I/O is float32 → Float32List buffer path unchanged; the GPU delegate
-  // still runs them as fp16 internally (isPrecisionLossAllowed).
+  // 512/640. I/O is float32 → Float32List buffer path unchanged. Inference now
+  // runs pure-CPU fp32 (XNNPACK, 4 threads); the GPU delegate is disabled
+  // (see YoloDetector._useGpuDelegate) so the latency study measures true fp32
+  // compute — the GPU path silently ran fp16 (isPrecisionLossAllowed).
   // NB: the earlier fp16 .tflite exports were broken — float16 I/O, no DEQUANTIZE —
   // so they failed to allocate on both GPU and CPU (app hung on load). See PERFORMANCE.md.
   s320(320, 'assets/models/cekmece_v4_native320_fp32.tflite', '320'),
@@ -51,6 +53,12 @@ enum ModelSize {
 }
 
 class YoloDetector {
+  // Inference backend switch. false → pure-CPU fp32 (XNNPACK, 4 threads):
+  // measures true fp32 compute for the latency study. true → GPU delegate
+  // (Adreno OpenCL) which runs fp16 internally (isPrecisionLossAllowed), so it
+  // does NOT reflect fp32 cost. Flip for a GPU-vs-CPU A/B (PERFORMANCE.md).
+  static const bool _useGpuDelegate = false;
+
   Interpreter? _interpreter;
   IsolateInterpreter? _isolateInterpreter;
   GpuDelegateV2? _gpuDelegate;
@@ -96,7 +104,7 @@ class YoloDetector {
     //   inferencePreference: 1 = SUSTAINED_SPEED (vs FAST_SINGLE_ANSWER=0)
     //   inferencePriority1:  2 = MIN_LATENCY    (vs MAX_PRECISION=1)
     Interpreter? interp;
-    if (Platform.isAndroid) {
+    if (Platform.isAndroid && _useGpuDelegate) {
       try {
         final gpu = GpuDelegateV2(
           options: GpuDelegateOptionsV2(
@@ -144,9 +152,10 @@ class YoloDetector {
     _outputBuffer = Float32List(outShape[0] * outShape[1] * outShape[2]);
 
     // Warmup + saf-inference benchmark (ana-isolate, kamera akışı başlamadan,
-    // isolate'e sarmadan önce). İlk GPU run kernel'leri derler (çok yavaş) —
-    // warmup bunu yutar. Buradaki ölçüm kopya yükü İÇERMEZ; detect()'teki
-    // inf+copy ile farkı IsolateInterpreter'ın kare başına kopya maliyetidir.
+    // isolate'e sarmadan önce). İlk run'lar XNNPACK'i kurar / thread havuzunu
+    // ısıtır (GPU'da kernel derleme) — warmup bunu yutar. Buradaki ölçüm kopya
+    // yükü İÇERMEZ; detect()'teki inf+copy ile farkı IsolateInterpreter'ın kare
+    // başına kopya maliyetidir.
     try {
       for (int i = 0; i < 3; i++) {
         _interpreter!
