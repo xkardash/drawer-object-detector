@@ -1035,7 +1035,41 @@ fp16'ydı). Bu faz **gerçek fp32 compute maliyetini** GPU olmadan ölçer: dele
 **Kurulum:** `YoloDetector._useGpuDelegate=false` (kod anahtarı; `true`=GPU A/B için saklı). Native fp32
 .tflite (320/640/800), I/O float32 (fp16'nın aksine sorunsuz allocate olur). Redmi Note 11 (SD680),
 release. Ölçüm: K4 on-device logger — per-frame `total_ms=pre+inf+parse`, `dt_ms` kareler-arası gecikme,
-`pure_ms` yükleme-anı saf-inference benchmark. Ham veri: `tez_icin_veriler/cpu_fp32_csv/cpu_fp32_{640,320}.csv`.
+`pure_ms` yükleme-anı saf-inference benchmark. Ham veri: `tez_icin_veriler/cpu_fp32_csv/cpu_fp32_{320,640,800}.csv`.
+
+### Ölçüm metodolojisi — neyi, neyle, nasıl ölçtük
+
+**Koşullar.** Redmi Note 11 (SD680, Adreno 610), Android 13, **release** build (debug değil → JIT/assert
+yok, gerçek dağıtım hızı). GPU delegate kapalı (`_useGpuDelegate=false`), CPU = XNNPACK 4 thread, fp32 native
+model. Kamera `ResolutionPreset.medium` (~720p) YUV420. Inference off-thread (`IsolateInterpreter`); doğal
+back-pressure (`_processing` bayrağı — önceki kare bitmeden yeni kare atlanır, manuel frame-skip yok).
+
+**Araç.** `lib/latency_logger.dart` (K4) — uygulama içi **REC** butonu. İşlenen her kare için bir satır
+in-memory buffer'a yazılır; REC durunca CSV olarak `/Android/data/<pkg>/files/latency_<ts>.csv`'e döker
+(runtime izni gerektirmez). CSV `adb pull` ile PC'ye çekilir, offline **Python** ile analiz edilir
+(percentile + FPS). **Kritik:** CSV uygulama-özel dış depolamada → uygulama kaldırılınca silinir; her kayıttan
+**önce** çek, ondan sonra reinstall yap (800 ilk denemesi tam bu yüzden kayboldu).
+
+**Prosedür (boyut başına).** (1) GPU-kapalı release APK kurulu. (2) Sabit boyut seçilir, **Auto KAPALI**
+(model switch ölçümü kirletmesin). (3) Telefon çekmeceye tutulur → REC → ~35–45 s gezilir → REC durdurulur.
+(4) CSV çekilir. (5) PC'de p50/p95/p99 + FPS hesaplanır.
+
+**Ölçülen metrikler — her biri NE'yi gösterir (CSV kolonları):**
+
+| Kolon | Nasıl üretilir | Neyi ölçer |
+|-------|----------------|------------|
+| `pure_ms` | Yükleme anı, ana-isolate, **12-iter ortalama**, kopya hariç (warmup sonrası) | **Saf inference compute** — backend maliyetinin en temiz tek sayısı; oturum boyu sabit |
+| `total_ms` | `pre+inf+parse` (her biri **EMA**, 0.8/0.2) | Kare-başı pipeline compute kırılımı (yumuşatılmış → merkezî eğilim; tail bastırılmış) |
+| `dt_ms` | Ardışık iki kare arası **ham** süre | **Gerçek throughput**; `FPS = 1000/dt_p50`; **tail (p95/p99) gerçek** (yumuşatma yok) |
+| `fps` | `dt`'den anlık FPS'in EMA'sı (0.7/0.3) | Ekrandaki canlı FPS göstergesi (raporda `dt`'den hesaplanan tercih edilir) |
+| `t_ms` | Kayıt başından geçen süre | **Termal eksen** — FPS'in zamanla seyri (throttling tespiti) |
+| `model_px` | O kareyi üreten giriş boyutu | Boyutu sabitler / Auto switch'leri görünür kılar |
+
+**Raporlama kuralı (dürüstlük).** Throughput ve tail için **`dt_ms` (ham)** esas alınır — `total_ms` EMA
+olduğundan p95/p99'u olduğundan dar gösterir. Tek-sayı inference maliyeti için **`pure_ms`** (12-iter,
+kopya-hariç) kullanılır. Percentile'lar lineer interpolasyonla; FPS = `1000/dt_p50` (medyan → aykırı-değere
+dayanıklı). Bu protokol GPU fp16 baseline'ı ile **birebir aynı** → CPU↔GPU karşılaştırması adil (tek değişken
+= backend).
 
 ### Ölçülen (CPU fp32, Redmi Note 11, release)
 
@@ -1043,14 +1077,14 @@ release. Ölçüm: K4 on-device logger — per-frame `total_ms=pre+inf+parse`, `
 |-------|---------------|-----------|-----------|-----------|-------------|-------------------|-------------|
 | 320 | 112.0 | 154.6 | 242.7 | 263.6 | 176 | **5.68** | 190 / 35 s |
 | 640 | 416.7 | 545.4 | 637.3 | 665.2 | 542 | **1.85** | 77 / 43 s |
-| 800 | ~670 (ekstrapole) | ~850 (ekstrapole) | — | — | — | **~1.1–1.3** | ⚠ ölçülemedi |
+| 800 | 716.6 | 843.7 | 890.4 | 904.2 | 842 | **1.19** | 45 / 38 s |
 
-> ⚠ **800 ölçümü kayboldu (dürüst not):** 800 kaydı ilk build ile alınmıştı; switch-crash fixi için
-> yeniden kurulum (`flutter install` "Uninstalling old version...") Android'in `/Android/data/<pkg>/files/`
-> dizinini sildiğinden CSV silindi. 320/640 PC'ye çekilmişti → güvende. 800 satırı **size² yasasından
-> ekstrapolasyon** (pure 416.7×(800/640)²≈651, ortalama-katsayıyla ≈676 → ~670 ms; total ≈545×1.5625≈850 ms).
-> İstenirse tek build ile (varsayılan 800) yeniden ölçülebilir; bir sonraki kayıttan **önce** reinstall
-> yapılmamalı (CSV'yi önce çek).
+> **800 yeniden ölçüldü (2026-06-07):** ilk 800 kaydı, switch-crash fixi için yapılan reinstall
+> (`flutter install` "Uninstalling old version...") Android'in `/Android/data/<pkg>/files/` dizinini silmesiyle
+> kaybolmuştu (320/640 PC'ye çekilmişti → güvende). İkinci kez **uygulama-içi switch ile (reinstall YOK)**
+> alındı → `cpu_fp32_800.csv`. Ölçülen pure=716.6 ms, önceki size²-ekstrapolasyondan (~670) **~%7 yüksek**:
+> CPU'da 800px hafif **süper-lineer** (pure/px²: 320:1.09 · 640:1.02 · **800:1.12** ×10⁻³ — cache/bellek-bandı
+> baskısı). total p50 tahmini (~850) ise birebir tuttu (ölçülen 843.7).
 
 ### CPU fp32 vs GPU fp16 — ana bulgu
 
@@ -1061,19 +1095,23 @@ Aynı cihaz, aynı native modeller, tek değişken = backend:
 |-------|---------------|---------------|-----------------|---------|---------|--------------------|
 | 320 | 61 | 112.0 | **1.84×** | 12 | 5.68 | 2.11× |
 | 640 | 221 | 416.7 | **1.89×** | 4 | 1.85 | 2.16× |
-| 800 | 371 | ~670 (est) | ~1.81× | 2.4 (K4) | ~1.2 (est) | ~2.0× |
+| 800 | 371 | 716.6 | **1.93×** | 2.4 (K4) | 1.19 | 2.02× |
 
 **Yorum (tez için):**
-- **fp16-GPU yolu, saf fp32-CPU'ya kıyasla ~1.85× daha düşük gecikme** ve ~2× daha yüksek throughput
-  sağlıyor (üç boyutta da tutarlı). "GPU delegate kullan" mühendislik kararını **niceliksel** doğrular:
-  kazanç hem fp16 aritmetiğinden hem inference'i CPU'dan boşaltmaktan gelir.
-- **size² yasası CPU'da da geçerli:** pure/px² = 320:1.09 · 640:1.02 (×10⁻³ ms/px²), dar bant —
-  GPU'daki (~5.5×10⁻⁴) eğilimin ~1.9× kaymış hali. Maliyet modeli **backend'den bağımsız** doğrulanmış oldu.
+- **fp16-GPU yolu, saf fp32-CPU'ya kıyasla ~1.9× daha düşük gecikme** (ölçülen pure oranı 320:1.84× ·
+  640:1.89× · 800:1.93×) ve ~2× daha yüksek throughput (320:2.11× · 640:2.16× · 800:2.02×) sağlıyor — üç
+  boyutta da tutarlı. "GPU delegate kullan" mühendislik kararını **niceliksel** doğrular: kazanç hem fp16
+  aritmetiğinden hem inference'i CPU'dan boşaltmaktan gelir.
+- **size² yasası CPU'da da büyük ölçüde geçerli:** pure/px² = 320:1.09 · 640:1.02 · 800:1.12 (×10⁻³ ms/px²),
+  dar bant — GPU'daki (~5.5×10⁻⁴) eğilimin ~1.9× kaymış hali. 800'de katsayı hafifçe yükseliyor (saf size²'nin
+  ~%7 üstünde) → büyük girişte **hafif süper-lineerlik** (cache/bellek-bandı baskısı). Maliyet modeli
+  **backend'den bağımsız** doğrulanmış oldu.
 - **Gerçek-zamanlılık:** saf CPU fp32 bu cihazda **hiçbir boyutta akıcı değil** — en hızlı 320 bile yalnız
-  ~5.7 FPS, 640 ~1.85 FPS, 800 ~1 FPS. Kullanılabilir tempo (≥~10 FPS) için **GPU delegate zorunlu**;
+  5.68 FPS, 640 1.85 FPS, 800 1.19 FPS. Kullanılabilir tempo (≥~10 FPS) için **GPU delegate zorunlu**;
   fp16 hassasiyet-kaybı doğruluğu ihmal edilebilir etkiler (fp16-proxy bölümü) ama hızı ~2× artırır.
-- **Termal:** koşular kısa (35–43 s) → throttle gözlenmedi (dt median drift hafif **negatif**: warmup/EMA
-  oturması). Sürdürülen termal eğri için ≥10 dk koşu gerekir; bu faz **steady-state latency** ölçümüdür.
+- **Termal:** koşular kısa (35–43 s; 800=38 s) → throttle gözlenmedi (dt median drift ihmal edilebilir:
+  320/640 hafif negatif, 800 yalnız +6 ms — warmup/EMA oturması). Sürdürülen termal eğri için ≥10 dk koşu
+  gerekir; bu faz **steady-state latency** ölçümüdür.
 
 ### B4. Model-switch use-after-free crash (bu fazda bulundu + giderildi)
 **Sorun:** CPU modunda model değiştirince uygulama çöküyordu. **Kök neden:** `_onFrame` bir kareyi
